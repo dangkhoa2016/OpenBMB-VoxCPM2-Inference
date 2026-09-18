@@ -23,6 +23,7 @@ classifiers = [
 
 [project.scripts]
 voxcpm-doctor = "voxcpm_runtime.doctor:main"
+voxcpm-verify-model = "scripts.verify_model:main"
 
 [project.urls]
 Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"
@@ -31,7 +32,7 @@ Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["voxcpm_runtime*"]
+include = ["voxcpm_runtime*", "deploy*", "scripts*"]
 
 [tool.setuptools.data-files]
 provenance = ["provenance/voxcpm-source-lock.json"]
