@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "project": "OpenBMB-VoxCPM2-Inference",
+  "upstream_code": {
+    "repository": "https://github.com/OpenBMB/VoxCPM",
+    "commit": "f772e498a45fbb5fb8e13fbf9b9c48be9fe33e69",
+    "license": "Apache-2.0"
+  },
+  "upstream_model": {
+    "model_id": "openbmb/VoxCPM2"
+  },
+  "kaggle_qualification_mirror": {
+    "model_id": "dangkhoa2016/openbmb-voxcpm2"
+  },
+  "verified_at_utc": "2026-09-25T09:20:42Z"
+}
