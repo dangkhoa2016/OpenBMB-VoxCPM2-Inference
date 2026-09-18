@@ -21,6 +21,9 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 
+[project.scripts]
+voxcpm-doctor = "voxcpm_runtime.doctor:main"
+
 [project.urls]
 Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"
 "Upstream source" = "https://github.com/OpenBMB/VoxCPM"
@@ -29,6 +32,9 @@ Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["voxcpm_runtime*"]
+
+[tool.setuptools.data-files]
+provenance = ["provenance/voxcpm-source-lock.json"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
