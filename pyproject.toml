@@ -23,6 +23,7 @@ classifiers = [
 
 [project.scripts]
 voxcpm-doctor = "voxcpm_runtime.doctor:main"
+voxcpm-generate = "scripts.generate:main"
 voxcpm-verify-model = "scripts.verify_model:main"
 
 [project.urls]
