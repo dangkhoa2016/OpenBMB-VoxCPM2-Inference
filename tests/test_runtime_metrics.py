@@ -12,6 +12,7 @@ import pytest
 from voxcpm_runtime.runtime_metrics import (
     HostFacts,
     Stopwatch,
+    GpuMemoryObservation,
     TorchCudaObservation,
     cgroup_memory_events,
     cgroup_memory_limit_bytes,
@@ -20,6 +21,7 @@ from voxcpm_runtime.runtime_metrics import (
     dependency_versions,
     host_available_ram_bytes,
     host_total_ram_bytes,
+    observe_gpu_memory,
     observe_torch_cuda,
     peak_rss_bytes,
     redact_text,
@@ -134,6 +136,71 @@ class _FakeCuda:
 
 def _torch_stub(cuda: object | None) -> object:
     return types.SimpleNamespace(cuda=cuda, __version__="0.0-stub")
+
+
+class _FakeCudaMemory(_FakeCuda):
+    def __init__(self) -> None:
+        super().__init__(True, True, 1)
+
+    def get_device_properties(self, index: int) -> object:
+        self.queried.append("get_device_properties")
+        assert index == 0
+        return types.SimpleNamespace(
+            name="Tesla T4",
+            total_memory=15_636_037_632,
+            major=7,
+            minor=5,
+        )
+
+    def memory_allocated(self, index: int) -> int:
+        self.queried.append("memory_allocated")
+        assert index == 0
+        return 1_000
+
+    def memory_reserved(self, index: int) -> int:
+        self.queried.append("memory_reserved")
+        assert index == 0
+        return 2_000
+
+    def max_memory_allocated(self, index: int) -> int:
+        self.queried.append("max_memory_allocated")
+        assert index == 0
+        return 3_000
+
+    def max_memory_reserved(self, index: int) -> int:
+        self.queried.append("max_memory_reserved")
+        assert index == 0
+        return 4_000
+
+
+def test_observe_gpu_memory_reports_selected_device() -> None:
+    cuda = _FakeCudaMemory()
+    observation = observe_gpu_memory(_torch_stub(cuda), 0)
+    assert observation == GpuMemoryObservation(
+        torch_imported=True,
+        cuda_available=True,
+        device_index=0,
+        device_name="Tesla T4",
+        device_total_memory_bytes=15_636_037_632,
+        compute_capability="7.5",
+        memory_allocated_bytes=1_000,
+        memory_reserved_bytes=2_000,
+        max_memory_allocated_bytes=3_000,
+        max_memory_reserved_bytes=4_000,
+    )
+    assert observation.to_dict()["max_memory_reserved_bytes"] == 4_000
+
+
+def test_observe_gpu_memory_requires_valid_index() -> None:
+    with pytest.raises(ValueError):
+        observe_gpu_memory(_torch_stub(_FakeCudaMemory()), -1)
+
+
+def test_observe_gpu_memory_handles_cuda_unavailable() -> None:
+    observation = observe_gpu_memory(_torch_stub(_FakeCuda(False, False, 0)), 0)
+    assert observation.torch_imported is True
+    assert observation.cuda_available is False
+    assert observation.memory_allocated_bytes is None
 
 
 def test_observe_torch_cuda_reports_canonical_cpu_facts() -> None:
