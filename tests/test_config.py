@@ -10,6 +10,7 @@ def test_defaults_preserve_unspecified_numeric_values():
     assert config.backend == "pytorch-voxcpm"
     assert config.offline is True
     assert config.load_denoiser is False
+    assert config.profile is None
     assert config.device == "auto"
     assert config.gpu_devices is None
     assert config.workers is None

@@ -6,6 +6,7 @@ from typing import Final
 from voxcpm_runtime.api_errors import ApiError
 from voxcpm_runtime.config import RuntimeConfig
 from voxcpm_runtime.device import ExecutionPlan
+from voxcpm_runtime.profiles import ProfileResolutionError, materialize_execution_profile
 from voxcpm_runtime.worker_client import WorkerClient
 from voxcpm_runtime.worker_types import WorkerBootstrapSpec
 
@@ -14,6 +15,15 @@ def parent_execution_plan(config: RuntimeConfig) -> ExecutionPlan:
     """Build the API-parent topology without importing Torch."""
     if not isinstance(config, RuntimeConfig):
         raise TypeError("config must be RuntimeConfig")
+
+    try:
+        config = materialize_execution_profile(config)
+    except ProfileResolutionError as error:
+        raise ApiError(
+            "invalid_execution_profile",
+            "API execution profile could not be resolved.",
+            status_code=500,
+        ) from error
 
     device = config.device.value
     if device == "cpu":

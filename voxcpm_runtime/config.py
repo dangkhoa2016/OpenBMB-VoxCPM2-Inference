@@ -24,6 +24,23 @@ class DeviceMode(str, Enum):
     CUDA = "cuda"
 
 
+class ExecutionProfile(str, Enum):
+    AUTO = "auto"
+    CPU = "cpu"
+    CUDA_SINGLE = "cuda-single"
+    CUDA_REPLICA = "cuda-replica"
+
+
+_PROFILE_ALIASES: dict[str, ExecutionProfile] = {
+    "auto": ExecutionProfile.AUTO,
+    "cpu": ExecutionProfile.CPU,
+    "cuda-single": ExecutionProfile.CUDA_SINGLE,
+    "gpu": ExecutionProfile.CUDA_SINGLE,
+    "cuda-replica": ExecutionProfile.CUDA_REPLICA,
+    "multi-gpu": ExecutionProfile.CUDA_REPLICA,
+}
+
+
 class Backend(str, Enum):
     PYTORCH_VOXCPM = "pytorch-voxcpm"
 
@@ -245,6 +262,22 @@ def parse_gpu_devices(value: Any) -> tuple[int, ...] | None:
     return tuple(parsed)
 
 
+def parse_execution_profile(value: Any) -> ExecutionProfile | None:
+    if value is None:
+        return None
+    if isinstance(value, ExecutionProfile):
+        return value
+    text = _trimmed(value, "VOXCPM_PROFILE")
+    if not text:
+        return None
+    normalized = text.casefold()
+    profile = _PROFILE_ALIASES.get(normalized)
+    if profile is None:
+        expected = ", ".join(("auto", "cpu", "cuda-single", "cuda-replica", "gpu", "multi-gpu"))
+        raise ConfigurationError("VOXCPM_PROFILE", f"expected one of: {expected}")
+    return profile
+
+
 def parse_workers(value: Any) -> int | None:
     if value is None:
         return None
@@ -283,6 +316,7 @@ class RuntimeConfig:
     load_denoiser: bool = False
     optimize: OptimizationMode = OptimizationMode.AUTO
     upstream_revision: str | None = None
+    profile: ExecutionProfile | None = None
     device: DeviceMode = DeviceMode.AUTO
     gpu_devices: tuple[int, ...] | None = None
     workers: int | None = None
@@ -318,6 +352,8 @@ class RuntimeConfig:
     qualification_strict: bool = False
 
     def __post_init__(self) -> None:
+        if self.profile is not None:
+            object.__setattr__(self, "profile", parse_execution_profile(self.profile))
         enum_fields = (
             ("backend", Backend, "VOXCPM_BACKEND"),
             ("optimize", OptimizationMode, "VOXCPM_OPTIMIZE"),
@@ -444,6 +480,7 @@ class RuntimeConfig:
             "load_denoiser": self.load_denoiser,
             "optimize": self.optimize.value,
             "upstream_revision": self.upstream_revision,
+            "profile": None if self.profile is None else self.profile.value,
             "device": self.device.value,
             "gpu_devices": self.gpu_devices_spec,
             "workers": self.workers_spec,
@@ -523,6 +560,7 @@ class RuntimeConfig:
             load_denoiser=_boolean(values, "VOXCPM_LOAD_DENOISER", False),
             optimize=OptimizationMode(optimize),
             upstream_revision=_lexical(values, "VOXCPM_UPSTREAM_REVISION", None, optional=True),
+            profile=parse_execution_profile(values.get("VOXCPM_PROFILE")),
             device=DeviceMode(device),
             gpu_devices=parse_gpu_devices(values.get("VOXCPM_GPU_DEVICES")),
             workers=parse_workers(values.get("VOXCPM_WORKERS")),
