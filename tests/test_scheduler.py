@@ -162,3 +162,81 @@ def test_snapshot_and_close_are_deterministic_and_idempotent():
     with pytest.raises(SchedulerAdmissionError) as caught:
         scheduler.submit(_tts_request("late"))
     assert caught.value.code == "scheduler_closed"
+
+
+def test_two_workers_accept_two_active_requests_and_queue_third():
+    worker0 = _worker("worker0", buffer_chunks=1)
+    worker1 = _worker("worker1", buffer_chunks=1)
+    scheduler = Scheduler((worker0, worker1), max_pending_requests=2)
+    assert scheduler.submit(_stream_request("a")) == "dispatched"
+    assert scheduler.submit(_stream_request("b")) == "dispatched"
+    assert scheduler.submit(_tts_request("c")) == "queued"
+    snapshot = scheduler.snapshot()
+    assert snapshot.busy_workers == 2
+    assert snapshot.pending_requests == 1
+    scheduler.close()
+    assert not worker0.is_alive
+    assert not worker1.is_alive
+
+
+def test_single_worker_cancel_preserves_other_worker_and_pending_work():
+    worker0 = _worker("worker0", buffer_chunks=1)
+    worker1 = _worker("worker1", buffer_chunks=1)
+    scheduler = Scheduler((worker0, worker1), max_pending_requests=2)
+    scheduler.submit(_stream_request("a"))
+    scheduler.submit(_stream_request("b"))
+    scheduler.submit(_tts_request("c"))
+
+    cancelled = scheduler.cancel("a")
+    assert cancelled.worker_id == "worker0"
+    assert worker0.state is WorkerState.STOPPED
+    assert worker1.state is WorkerState.BUSY
+
+    terminal = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and "c" not in terminal:
+        for event in scheduler.poll(timeout_seconds=0.2):
+            if event.kind in {"stream_end", "result", "error", "cancelled"}:
+                terminal.append(event.request_id)
+    assert "b" in terminal
+    assert "c" in terminal
+    assert scheduler.snapshot().failed_workers == 0
+    scheduler.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="signal-based crash test is POSIX-only")
+def test_single_worker_crash_does_not_fail_pending_when_survivor_is_healthy():
+    worker0 = _worker("worker0", buffer_chunks=1)
+    worker1 = _worker("worker1", buffer_chunks=1)
+    scheduler = Scheduler((worker0, worker1), max_pending_requests=2)
+    scheduler.submit(_stream_request("a"))
+    scheduler.submit(_stream_request("b"))
+    scheduler.submit(_tts_request("c"))
+    assert worker0.pid is not None
+    os.kill(worker0.pid, signal.SIGKILL)
+
+    events = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        events.extend(scheduler.poll(timeout_seconds=0.2))
+        if any(event.request_id == "c" and event.kind == "result" for event in events):
+            break
+
+    by_request = {}
+    for event in events:
+        if event.request_id is not None:
+            by_request.setdefault(event.request_id, []).append(event)
+    assert any(
+        event.kind == "error"
+        and event.error is not None
+        and event.error.code == "worker_exited"
+        for event in by_request["a"]
+    )
+    assert not any(
+        event.kind == "error"
+        and event.error is not None
+        and event.error.code == "no_healthy_worker"
+        for event in by_request.get("c", [])
+    )
+    assert any(event.kind == "result" for event in by_request["c"])
+    scheduler.close()
