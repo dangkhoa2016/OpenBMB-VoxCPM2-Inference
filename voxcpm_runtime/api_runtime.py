@@ -15,7 +15,7 @@ from voxcpm_runtime.worker_types import WorkerMessage, WorkerRequest
 class ApiRuntime:
     def __init__(
         self,
-        worker: WorkerClient,
+        workers: tuple[WorkerClient, ...],
         *,
         max_pending_requests: int,
         stream_queue_chunks: int = 4,
@@ -26,8 +26,10 @@ class ApiRuntime:
             or stream_queue_chunks <= 0
         ):
             raise ValueError("stream_queue_chunks must be a positive integer")
-        self._worker = worker
-        self._scheduler = Scheduler((worker,), max_pending_requests=max_pending_requests)
+        if not isinstance(workers, tuple) or not workers:
+            raise ValueError("workers must be a non-empty tuple")
+        self._workers = workers
+        self._scheduler = Scheduler(workers, max_pending_requests=max_pending_requests)
         self._stream_queue_chunks = stream_queue_chunks
         self._lock = threading.RLock()
         self._futures: dict[str, Future[WorkerMessage]] = {}
@@ -42,8 +44,14 @@ class ApiRuntime:
         self._thread.start()
 
     @property
+    def workers(self) -> tuple[WorkerClient, ...]:
+        return self._workers
+
+    @property
     def worker(self) -> WorkerClient:
-        return self._worker
+        if len(self._workers) != 1:
+            raise RuntimeError("worker property requires exactly one worker")
+        return self._workers[0]
 
     def snapshot(self):
         with self._lock:
