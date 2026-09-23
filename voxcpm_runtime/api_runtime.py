@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from concurrent.futures import Future
@@ -12,11 +13,25 @@ from voxcpm_runtime.worker_types import WorkerMessage, WorkerRequest
 
 
 class ApiRuntime:
-    def __init__(self, worker: WorkerClient, *, max_pending_requests: int) -> None:
+    def __init__(
+        self,
+        worker: WorkerClient,
+        *,
+        max_pending_requests: int,
+        stream_queue_chunks: int = 4,
+    ) -> None:
+        if (
+            isinstance(stream_queue_chunks, bool)
+            or not isinstance(stream_queue_chunks, int)
+            or stream_queue_chunks <= 0
+        ):
+            raise ValueError("stream_queue_chunks must be a positive integer")
         self._worker = worker
         self._scheduler = Scheduler((worker,), max_pending_requests=max_pending_requests)
+        self._stream_queue_chunks = stream_queue_chunks
         self._lock = threading.RLock()
         self._futures: dict[str, Future[WorkerMessage]] = {}
+        self._streams: dict[str, queue.Queue[WorkerMessage]] = {}
         self._closed = False
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -43,10 +58,24 @@ class ApiRuntime:
             self._futures[request.request_id] = future
         return future
 
+    def submit_stream(self, request: WorkerRequest) -> queue.Queue[WorkerMessage]:
+        if request.operation != "stream":
+            raise ValueError("submit_stream requires a stream request")
+        stream_queue: queue.Queue[WorkerMessage] = queue.Queue(
+            maxsize=self._stream_queue_chunks
+        )
+        with self._lock:
+            if self._closed:
+                raise SchedulerAdmissionError(code="scheduler_closed")
+            self._scheduler.submit(request)
+            self._streams[request.request_id] = stream_queue
+        return stream_queue
+
     def cancel(self, request_id: str) -> WorkerMessage:
         with self._lock:
             event = self._scheduler.cancel(request_id)
             future = self._futures.pop(request_id, None)
+            self._streams.pop(request_id, None)
             if future is not None and not future.done():
                 future.cancel()
             return event
@@ -64,6 +93,7 @@ class ApiRuntime:
                 if not future.done():
                     future.cancel()
             self._futures.clear()
+            self._streams.clear()
 
     def _dispatch_loop(self) -> None:
         while not self._stop.is_set():
@@ -75,6 +105,9 @@ class ApiRuntime:
             for event in events:
                 if event.request_id is None:
                     continue
+                if event.kind in {"stream_chunk", "stream_end", "error", "cancelled"}:
+                    if self._route_stream_event(event):
+                        continue
                 if event.kind not in {"result", "error", "cancelled"}:
                     continue
                 with self._lock:
@@ -83,6 +116,28 @@ class ApiRuntime:
                     future.set_result(event)
             if not events:
                 time.sleep(0.005)
+
+    def _route_stream_event(self, event: WorkerMessage) -> bool:
+        request_id = event.request_id
+        if request_id is None:
+            return False
+        with self._lock:
+            stream_queue = self._streams.get(request_id)
+        if stream_queue is None:
+            return False
+        while not self._stop.is_set():
+            with self._lock:
+                if request_id not in self._streams:
+                    return True
+            try:
+                stream_queue.put(event, timeout=0.05)
+                break
+            except queue.Full:
+                continue
+        if event.kind in {"stream_end", "error", "cancelled"}:
+            with self._lock:
+                self._streams.pop(request_id, None)
+        return True
 
 
 __all__: Final[tuple[str, ...]] = ("ApiRuntime",)
