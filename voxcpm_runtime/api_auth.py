@@ -37,14 +37,25 @@ def validate_bind_auth_policy(config: RuntimeConfig) -> None:
         )
 
 
-def verify_bearer_token(config: RuntimeConfig, authorization: str | None) -> None:
+def verify_bearer_token(
+    config: RuntimeConfig,
+    authorization: str | list[str] | tuple[str, ...] | None,
+) -> None:
     if not config.require_auth:
         return
     expected = config.api_token
     if expected is None:
         raise ApiError("api_token_required", "Authentication is unavailable.", status_code=500)
+    if isinstance(authorization, (list, tuple)):
+        if len(authorization) != 1:
+            raise ApiError("unauthorized", "Authentication is required.", status_code=401)
+        authorization = authorization[0]
     prefix = "Bearer "
-    if authorization is None or not authorization.startswith(prefix):
+    if (
+        authorization is None
+        or len(authorization) > 4096
+        or not authorization.startswith(prefix)
+    ):
         raise ApiError("unauthorized", "Authentication is required.", status_code=401)
     supplied = authorization[len(prefix) :]
     if not supplied or not hmac.compare_digest(supplied, expected):

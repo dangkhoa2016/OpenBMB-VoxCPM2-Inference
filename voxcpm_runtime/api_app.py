@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Callable, Final
 
 from fastapi import FastAPI, Header, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -154,6 +155,19 @@ def create_app(
     async def api_error_handler(_request: Request, error: ApiError):
         return _public_error(error)
 
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        _request: Request,
+        _error: RequestValidationError,
+    ):
+        return _public_error(
+            ApiError(
+                "invalid_request",
+                "Request payload is invalid.",
+                status_code=422,
+            )
+        )
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
@@ -189,7 +203,7 @@ def create_app(
     @app.post("/v1/tts")
     async def tts(
         body: TtsRequestModel,
-        authorization: str | None = Header(default=None),
+        authorization: list[str] | None = Header(default=None),
         x_request_id: str | None = Header(default=None),
     ):
         request_id = _safe_request_id(x_request_id)
@@ -224,7 +238,7 @@ def create_app(
     @app.post("/v1/tts/stream")
     async def tts_stream(
         body: TtsRequestModel,
-        authorization: str | None = Header(default=None),
+        authorization: list[str] | None = Header(default=None),
         x_request_id: str | None = Header(default=None),
     ):
         request_id = _safe_request_id(x_request_id)
