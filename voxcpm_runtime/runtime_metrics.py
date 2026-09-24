@@ -26,6 +26,7 @@ _ABSOLUTE_PATH_PATTERN: Final = re.compile(r"(?<![\w.~])/(?:[^\s/'\"]+/)*[^\s/'\
 _TOKEN_PATTERN: Final = re.compile(
     r"\b(?:hf_|huggingface_|ghp_|gho_|ghu_|ghs_|github_pat_|glpat-|xox[abprs]-|sk-)[A-Za-z0-9_-]{6,}"
 )
+_BEARER_PATTERN: Final = re.compile(r"\bBearer\s+[^\s,;]+", re.IGNORECASE)
 _REDACTED_URL: Final = "<redacted-url>"
 _REDACTED_PATH: Final = "<redacted-path>"
 _REDACTED_TOKEN: Final = "<redacted-token>"
@@ -38,7 +39,8 @@ class RuntimeMetricsError(RuntimeError):
 def redact_text(value: str) -> str:
     """Remove URLs, absolute filesystem paths, home paths and token shapes."""
 
-    redacted = _TOKEN_PATTERN.sub(_REDACTED_TOKEN, value)
+    redacted = _BEARER_PATTERN.sub(f"Bearer {_REDACTED_TOKEN}", value)
+    redacted = _TOKEN_PATTERN.sub(_REDACTED_TOKEN, redacted)
     redacted = _URL_PATTERN.sub(_REDACTED_URL, redacted)
     redacted = _HOME_PATTERN.sub(_REDACTED_PATH, redacted)
     return _ABSOLUTE_PATH_PATTERN.sub(_REDACTED_PATH, redacted)
