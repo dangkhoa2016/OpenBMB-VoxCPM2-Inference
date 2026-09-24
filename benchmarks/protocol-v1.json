@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "protocol_id": "voxcpm2-benchmark-v1",
+  "warmup_policy": {
+    "cold_start": "Measure process launch through readiness separately.",
+    "warmup_requests": 1,
+    "measured_warm_repetitions": 3,
+    "mix_cold_and_warm": false
+  },
+  "formulas": {
+    "rtf": "request_elapsed_seconds / generated_audio_duration_seconds",
+    "requests_per_second": "completed_requests / concurrent_makespan_seconds",
+    "audio_seconds_per_second": "sum_generated_audio_duration_seconds / concurrent_makespan_seconds",
+    "scaling_ratio": "two_worker_requests_per_second / one_worker_requests_per_second"
+  },
+  "inputs": {
+    "B1": {
+      "kind": "standard_tts",
+      "language": "en",
+      "text": "Hello from VoxCPM2."
+    },
+    "B2": {
+      "kind": "standard_tts",
+      "language": "vi",
+      "text": "Xin chào từ VoxCPM2."
+    },
+    "B3": {
+      "kind": "standard_tts",
+      "language": "en",
+      "text": "VoxCPM2 is generating a longer paragraph to measure sustained speech synthesis performance under a fixed benchmark protocol."
+    },
+    "B4": {
+      "kind": "voice_design",
+      "text": "Xin chào từ VoxCPM2.",
+      "voice_instruction": "A warm, calm female voice with clear articulation and a natural speaking pace."
+    },
+    "B5": {
+      "kind": "reference_clone",
+      "text": "Xin chào, đây là phép thử nhân bản giọng nói.",
+      "reference_fixture": "upstream:examples/reference_speaker.wav"
+    },
+    "B6": {
+      "kind": "continuation",
+      "text": "Và đây là phần tiếp theo.",
+      "prompt_fixture": "upstream:examples/example.wav",
+      "prompt_text": "This is a fixed continuation benchmark fixture."
+    },
+    "B7": {
+      "kind": "streaming",
+      "language": "vi",
+      "text": "Xin chào từ VoxCPM2."
+    },
+    "B8": {
+      "kind": "concurrency",
+      "requests": [
+        {
+          "request_id": "benchmark-concurrency-a",
+          "text": "Hello from VoxCPM2."
+        },
+        {
+          "request_id": "benchmark-concurrency-b",
+          "text": "Xin chào từ VoxCPM2."
+        }
+      ]
+    }
+  }
+}
