@@ -204,3 +204,39 @@ def test_stream_backpressure_timeout_releases_dispatcher_and_worker():
         assert message.error is not None
         assert message.error.code == "stream_backpressure_timeout"
         assert message.error.retryable is True
+
+
+def test_min_tmp_free_bytes_fails_closed_when_capacity_is_insufficient(monkeypatch):
+    from types import SimpleNamespace
+
+    import voxcpm_runtime.api_app as api_app
+
+    monkeypatch.setattr(
+        api_app.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=1000, used=950, free=50),
+    )
+    with pytest.raises(Exception) as caught:
+        create_app(
+            _config(tmp_dir="/tmp", min_tmp_free_bytes=100),
+            worker_factory=_worker,
+        )
+    error = caught.value
+    assert getattr(error, "code", None) == "insufficient_tmp_space"
+
+
+def test_min_tmp_free_bytes_accepts_exact_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    import voxcpm_runtime.api_app as api_app
+
+    monkeypatch.setattr(
+        api_app.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=1000, used=900, free=100),
+    )
+    app = create_app(
+        _config(tmp_dir="/tmp", min_tmp_free_bytes=100),
+        worker_factory=_worker,
+    )
+    assert app is not None
