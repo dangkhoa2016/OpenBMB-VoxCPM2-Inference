@@ -6,8 +6,9 @@
 - Repository: `OpenBMB-VoxCPM2-Inference`
 - Branch: `main`
 - M3 starting SHA: `ed265570041ed67b5f1f04bf57b66835fc0fb64a`
-- Implementation SHA: `PENDING_IMPLEMENTATION_COMMIT`
-- Implementation CI run: `PENDING_CI`
+- Implementation SHA: `1be5e340e29a76e23fe10a07521bdd532f5b50c8`
+- Implementation CI run: `36154845384` (`https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference/actions/runs/36154845384`), `PASS` on exact SHA `1be5e340e29a76e23fe10a07521bdd532f5b50c8`
+- Implementation CI matrix: Python `3.10` `PASS`, Python `3.11` `PASS`, Python `3.12` `PASS`
 - Evidence follow-up SHA: `PENDING_EVIDENCE_COMMIT`
 - Python (host): `3.12.13`
 - Python (isolated verification): `3.10.12`, `3.12.13`
@@ -127,7 +128,7 @@ golden_sha256 = 75b074a436b54ec3947272220ab2bb35223c712ea43985ce3610cf512387cd7e
 - Token-pattern scan of M3 sources, tests, docs, and CI: `PASS`
 - Isolated `uv pip check` (Python `3.10.12` and `3.12.13`): `PASS`
 - Host `python -m pip check`: `FAIL` only for pre-existing Kaggle environment packages (`bigframes`, `google-adk`, `google-colab`, `dopamine-rl`, `moviepy`); this project has no runtime dependencies, matching the recorded M2 environment condition
-- CI: `PENDING_CI`
+- Implementation exact-SHA CI: `PASS`, run `36154845384` on SHA `1be5e340e29a76e23fe10a07521bdd532f5b50c8`
 
 ## Repository integrity
 
@@ -148,11 +149,11 @@ golden_sha256 = 75b074a436b54ec3947272220ab2bb35223c712ea43985ce3610cf512387cd7e
 ## Gate decision
 
 ```text
-M3_BACKEND_CONTRACT_GATE=PENDING_CI
-M3_FAKE_BACKEND_GATE=PENDING_CI
-M3_ERROR_NORMALIZATION_GATE=PENDING_CI
-M3_UPSTREAM_ISOLATION_GATE=PENDING_CI
-M3_BACKEND_ABSTRACTION=PENDING_CI
+M3_BACKEND_CONTRACT_GATE=PASS
+M3_FAKE_BACKEND_GATE=PASS
+M3_ERROR_NORMALIZATION_GATE=PASS
+M3_UPSTREAM_ISOLATION_GATE=PASS
+M3_BACKEND_ABSTRACTION=PASS
 ```
 
-The gate remains pending until the implementation commit is pushed and its exact-SHA CI is green.
+The gate is bound to implementation commit `1be5e340e29a76e23fe10a07521bdd532f5b50c8` and its exact-SHA CI run `36154845384`. The follow-up evidence commit carries documentation only and is verified by the final exact-SHA CI run.
