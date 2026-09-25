@@ -2,12 +2,12 @@
 
 ## Status
 
-- UTC evidence snapshot: `2026-09-25T12:22:44Z`
+- UTC evidence snapshot: `2026-09-25T12:24:44Z`
 - Repository: `OpenBMB-VoxCPM2-Inference`
 - Branch: `main`
 - Starting SHA: `e02b22f6252a20da507ff981501c5cc5e92f3a9e`
-- Implementation SHA: `PENDING`
-- Evidence follow-up SHA: `PENDING`
+- Implementation SHA: `e50ee55a2f9b9004b6719a66b21d9428c3fa17e8`
+- Evidence follow-up SHA: `this evidence commit`
 - Python: `3.12.13`
 - Version: `1.0.0`
 - Source lock SHA-256: `10097c137461308dfb2693b1bf53f2fdff3deb8508ff1add2f1d3047ecae367a`
@@ -25,7 +25,7 @@
 - Wheel content/entry-point smoke: `PASS` in an offline `uv` environment
 - Isolated package `pip check`: `PASS`
 - Host `python -m pip check`: `FAIL` only for pre-existing environment packages (`bigframes`, `google-adk`, `google-colab`, `dopamine-rl`, `moviepy`); this project has no runtime dependencies
-- Full implementation CI: `PENDING` exact candidate SHA
+- Full implementation CI: `PASS`, run `36134661011` (`https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference/actions/runs/36134661011`), exact SHA `e50ee55a2f9b9004b6719a66b21d9428c3fa17e8`
 
 ## Portable resolver checks
 
@@ -94,9 +94,9 @@ The application-level offline flags are not proof that the operating system netw
 ## Gate decision
 
 ```text
-M2_PORTABLE_CODE_GATE=HOLD
+M2_PORTABLE_CODE_GATE=PASS
 M2_KAGGLE_OFFLINE_GATE=HOLD
 M2_PORTABLE_MODEL_RESOLVER=HOLD
 ```
 
-The local implementation is verified, but the formal code gate awaits exact-SHA CI and the canonical gate lacks OS-level Internet-OFF proof. The implementation commit and remote CI result will be recorded after push; the evidence follow-up will then be checked by CI as well.
+The portable code gate is complete: local checks and exact-SHA CI passed. The canonical Kaggle gate remains `HOLD` because the operating system Internet-OFF prerequisite could not be verified; this evidence-only follow-up must also receive green CI. M3 is not authorized.
