@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
+import time
 from typing import Final, Literal
 
 from voxcpm_runtime.worker_client import WorkerClient, WorkerState
@@ -29,12 +31,19 @@ class SchedulerSnapshot:
     max_pending_requests: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingRequest:
+    request: WorkerRequest
+    enqueued_at: float
+
+
 class Scheduler:
     def __init__(
         self,
         workers: tuple[WorkerClient, ...],
         *,
         max_pending_requests: int,
+        queue_timeout_seconds: float | None = None,
     ) -> None:
         if not isinstance(workers, tuple) or not workers:
             raise ValueError("workers must be a non-empty tuple")
@@ -48,9 +57,19 @@ class Scheduler:
             or max_pending_requests <= 0
         ):
             raise ValueError("max_pending_requests must be a positive integer")
+        if queue_timeout_seconds is not None and (
+            isinstance(queue_timeout_seconds, bool)
+            or not isinstance(queue_timeout_seconds, (int, float))
+            or not math.isfinite(float(queue_timeout_seconds))
+            or queue_timeout_seconds < 0
+        ):
+            raise ValueError("queue_timeout_seconds must be a non-negative finite number")
         self._workers = tuple(sorted(workers, key=lambda item: item.worker_id))
         self._max_pending = max_pending_requests
-        self._pending: deque[WorkerRequest] = deque()
+        self._queue_timeout_seconds = (
+            None if queue_timeout_seconds is None else float(queue_timeout_seconds)
+        )
+        self._pending: deque[_PendingRequest] = deque()
         self._active: dict[str, str] = {}
         self._submitted_ids: set[str] = set()
         self._events: deque[WorkerMessage] = deque()
@@ -101,11 +120,14 @@ class Scheduler:
             )
         if not self._healthy_workers():
             raise SchedulerAdmissionError(code="no_healthy_worker", retryable=True)
-        self._pending.append(request)
+        self._pending.append(
+            _PendingRequest(request=request, enqueued_at=time.monotonic())
+        )
         self._submitted_ids.add(request.request_id)
         return "queued"
 
     def poll(self, *, timeout_seconds: float = 0.0) -> tuple[WorkerMessage, ...]:
+        self._expire_pending()
         if self._events:
             return self._drain_events()
         for worker in self._workers:
@@ -132,8 +154,8 @@ class Scheduler:
     def cancel(self, request_id: str) -> WorkerMessage:
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("request_id must be non-empty")
-        for index, request in enumerate(self._pending):
-            if request.request_id == request_id:
+        for index, pending in enumerate(self._pending):
+            if pending.request.request_id == request_id:
                 del self._pending[index]
                 return WorkerMessage(
                     kind="cancelled",
@@ -164,7 +186,7 @@ class Scheduler:
             return
         self._closed = True
         while self._pending:
-            request = self._pending.popleft()
+            request = self._pending.popleft().request
             self._events.append(
                 WorkerMessage(
                     kind="cancelled",
@@ -192,18 +214,19 @@ class Scheduler:
         ]
 
     def _dispatch_pending(self) -> None:
+        self._expire_pending()
         while self._pending:
             ready = self._ready_workers()
             if not ready:
                 return
             worker = ready[0]
-            request = self._pending.popleft()
+            pending = self._pending.popleft()
             try:
-                worker.submit(request)
+                worker.submit(pending.request)
             except WorkerStateError:
-                self._pending.appendleft(request)
+                self._pending.appendleft(pending)
                 return
-            self._active[worker.worker_id] = request.request_id
+            self._active[worker.worker_id] = pending.request.request_id
 
     def _worker_failed(
         self,
@@ -225,11 +248,31 @@ class Scheduler:
             )
         )
 
+    def _expire_pending(self) -> None:
+        timeout = self._queue_timeout_seconds
+        if timeout is None:
+            return
+        now = time.monotonic()
+        while self._pending and now - self._pending[0].enqueued_at >= timeout:
+            request = self._pending.popleft().request
+            self._events.append(
+                WorkerMessage(
+                    kind="error",
+                    worker_id="scheduler",
+                    request_id=request.request_id,
+                    error=WorkerErrorData(
+                        code="queue_timeout",
+                        message="Request expired while waiting for an inference worker.",
+                        retryable=True,
+                    ),
+                )
+            )
+
     def _fail_pending_without_healthy_workers(self) -> None:
         if self._healthy_workers():
             return
         while self._pending:
-            request = self._pending.popleft()
+            request = self._pending.popleft().request
             self._events.append(
                 WorkerMessage(
                     kind="error",

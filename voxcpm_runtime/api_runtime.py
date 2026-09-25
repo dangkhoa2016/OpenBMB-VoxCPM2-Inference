@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -9,7 +10,7 @@ from typing import Final
 from voxcpm_runtime.scheduler import Scheduler
 from voxcpm_runtime.worker_client import WorkerClient
 from voxcpm_runtime.worker_errors import SchedulerAdmissionError, WorkerError
-from voxcpm_runtime.worker_types import WorkerMessage, WorkerRequest
+from voxcpm_runtime.worker_types import WorkerErrorData, WorkerMessage, WorkerRequest
 
 
 class ApiRuntime:
@@ -19,6 +20,8 @@ class ApiRuntime:
         *,
         max_pending_requests: int,
         stream_queue_chunks: int = 4,
+        queue_timeout_seconds: float | None = None,
+        stream_backpressure_timeout_seconds: float | None = None,
     ) -> None:
         if (
             isinstance(stream_queue_chunks, bool)
@@ -28,9 +31,27 @@ class ApiRuntime:
             raise ValueError("stream_queue_chunks must be a positive integer")
         if not isinstance(workers, tuple) or not workers:
             raise ValueError("workers must be a non-empty tuple")
+        if stream_backpressure_timeout_seconds is not None and (
+            isinstance(stream_backpressure_timeout_seconds, bool)
+            or not isinstance(stream_backpressure_timeout_seconds, (int, float))
+            or not math.isfinite(float(stream_backpressure_timeout_seconds))
+            or stream_backpressure_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "stream_backpressure_timeout_seconds must be a positive finite number"
+            )
         self._workers = workers
-        self._scheduler = Scheduler(workers, max_pending_requests=max_pending_requests)
+        self._scheduler = Scheduler(
+            workers,
+            max_pending_requests=max_pending_requests,
+            queue_timeout_seconds=queue_timeout_seconds,
+        )
         self._stream_queue_chunks = stream_queue_chunks
+        self._stream_backpressure_timeout_seconds = (
+            None
+            if stream_backpressure_timeout_seconds is None
+            else float(stream_backpressure_timeout_seconds)
+        )
         self._lock = threading.RLock()
         self._futures: dict[str, Future[WorkerMessage]] = {}
         self._streams: dict[str, queue.Queue[WorkerMessage]] = {}
@@ -133,12 +154,42 @@ class ApiRuntime:
             stream_queue = self._streams.get(request_id)
         if stream_queue is None:
             return False
+        timeout = self._stream_backpressure_timeout_seconds
+        deadline = None if timeout is None else time.monotonic() + timeout
         while not self._stop.is_set():
             with self._lock:
                 if request_id not in self._streams:
                     return True
+            put_timeout = 0.05
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    with self._lock:
+                        self._streams.pop(request_id, None)
+                    while True:
+                        try:
+                            stream_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    try:
+                        stream_queue.put_nowait(
+                            WorkerMessage(
+                                kind="error",
+                                worker_id="api",
+                                request_id=request_id,
+                                error=WorkerErrorData(
+                                    code="stream_backpressure_timeout",
+                                    message="Stream consumer did not drain buffered audio in time.",
+                                    retryable=True,
+                                ),
+                            )
+                        )
+                    except queue.Full:
+                        pass
+                    return True
+                put_timeout = min(put_timeout, remaining)
             try:
-                stream_queue.put(event, timeout=0.05)
+                stream_queue.put(event, timeout=put_timeout)
                 break
             except queue.Full:
                 continue
