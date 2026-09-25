@@ -1,6 +1,6 @@
 # M0 bootstrap evidence
 
-- UTC timestamp: `2026-09-25T09:34:44Z`
+- Bootstrap candidate UTC timestamp: `2026-09-25T09:34:44Z`
 - Repository remote: `https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference.git`
 - Branch: `main`
 - Pre-commit candidate state: unborn branch with the complete M0 candidate staged; no commit existed before this bootstrap.
@@ -20,8 +20,11 @@
 - Reference model: `openbmb/VoxCPM2`, model API revision `32279effe8c19989596f05d353d1447f51d9e915`, model-card license `apache-2.0`.
 - Source lock: created with the exact verified upstream code SHA.
 - Local M0 gate: `PASS`.
-- Push and baseline CI: `PENDING` until the M0 commit is created and pushed.
-- Final M0 gate at report time: `HOLD`, pending push and baseline CI for the exact commit.
+- Pushed bootstrap commit: `ffb8f9bb8a37c5781fbc18cf1ad686638f7a514c`.
+- Push verification: `PASS`, `origin/main` resolves to the exact bootstrap commit.
+- Baseline CI: `PASS`, workflow `CI` run `36119460975` completed successfully for the exact bootstrap commit.
+- Final verification UTC timestamp: `2026-09-25T09:38:04Z`.
+- Final M0 gate: `PASS`.
 - Next authorized action: stop after M0 unless a new instruction authorizes another milestone.
 
 The Kaggle shell emitted a non-fatal pre-existing `sitecustomize` warning about a missing `wrapt` module while invoking Python. All test and validation commands exited successfully; remote CI provides an independent clean-run verification.
