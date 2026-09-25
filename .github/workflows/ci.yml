@@ -37,6 +37,20 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Run bootstrap tests
         run: python -m pytest -q
+      - name: Compile M2 modules
+        run: python -m compileall -q voxcpm_runtime deploy tests scripts
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Verify model CLI structured failure without a model
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_OFFLINE=1 voxcpm-verify-model > /tmp/voxcpm-verify-model.json 2> /tmp/voxcpm-verify-model.err
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          test ! -s /tmp/voxcpm-verify-model.err
+          python -m json.tool /tmp/voxcpm-verify-model.json >/dev/null
       - name: Run doctor default smoke
         shell: bash
         run: |

@@ -4,7 +4,7 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình môi trường ổn định, inventory host/CUDA tùy chọn, kế hoạch thực thi CPU/CUDA xác định và CLI chẩn đoán `voxcpm-doctor`. Dự án chưa tải trọng số mô hình và chưa cung cấp inference, API, streaming, scheduler hay hỗ trợ triển khai. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình môi trường ổn định, inventory host/CUDA tùy chọn, kế hoạch thực thi CPU/CUDA xác định và CLI chẩn đoán `voxcpm-doctor`. M2 bổ sung phân giải mô hình local chỉ đọc metadata, discovery giới hạn trên Kaggle mount và CLI `voxcpm-verify-model`. Cả hai milestone đều không tải trọng số mô hình và chưa cung cấp inference, API, streaming, scheduler hay hỗ trợ triển khai. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M1 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M2 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -31,11 +31,12 @@ Sau khi cài đặt, có thể kiểm tra môi trường hiện tại mà không
 ```bash
 voxcpm-doctor
 VOXCPM_DEVICE=cpu voxcpm-doctor
+voxcpm-verify-model
 ```
 
 Doctor xuất JSON xác định. Yêu cầu tường minh `VOXCPM_DEVICE=cuda` sẽ thất bại khi không có thiết bị CUDA dùng được; hệ thống không âm thầm chuyển sang CPU. Xem [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) để biết hợp đồng biến môi trường và chính sách thiết bị.
 
-Test M1 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Chính sách thận trọng này có thể được tinh chỉnh sau khi có bằng chứng ở một giai đoạn sau.
+Test M0 đến M2 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) để biết hợp đồng resolver M2. Chính sách thận trọng này có thể được tinh chỉnh sau khi có bằng chứng ở một giai đoạn sau.
 
 ## License
 

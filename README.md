@@ -4,7 +4,7 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration, host and optional CUDA inventory, deterministic CPU/CUDA execution planning, and the `voxcpm-doctor` diagnostic CLI. It does not load model weights or provide inference, an API, streaming, scheduling, or deployment support. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration, host and optional CUDA inventory, deterministic CPU/CUDA execution planning, and the `voxcpm-doctor` diagnostic CLI. M2 adds portable, metadata-only local model resolution, bounded Kaggle mount discovery, and the `voxcpm-verify-model` CLI. Neither milestone loads model weights or provides inference, an API, streaming, scheduling, or deployment support. It is not production-ready.
 
 ## Scope
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-M1 supports Python 3.10 through 3.12.
+M0 through M2 support Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -31,11 +31,12 @@ After installation, inspect the current environment without loading a model:
 ```bash
 voxcpm-doctor
 VOXCPM_DEVICE=cpu voxcpm-doctor
+voxcpm-verify-model
 ```
 
 The doctor emits deterministic JSON. An explicit `VOXCPM_DEVICE=cuda` request fails when no usable CUDA device is visible; it never silently falls back to CPU. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the environment contract and device policy.
 
-M1 tests do not download or execute the VoxCPM2 model and do not require a GPU. M0 rejects tracked `.bin` files along with model-weight formats. This conservative policy may be refined in a later evidence-backed milestone.
+M0 through M2 tests do not download or execute the VoxCPM2 model and do not require a GPU. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for the M2 resolver contract. This conservative policy may be refined in a later evidence-backed milestone.
 
 ## License
 
