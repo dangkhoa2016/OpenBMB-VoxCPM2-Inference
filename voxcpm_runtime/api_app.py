@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import shutil
+import tempfile
 import uuid
 import wave
 from array import array
@@ -71,6 +73,28 @@ def _default_workers(config: RuntimeConfig) -> tuple[WorkerClient, ...]:
     return build_worker_clients(config)
 
 
+def _validate_tmp_space(config: RuntimeConfig) -> None:
+    minimum = config.min_tmp_free_bytes
+    if minimum is None:
+        return
+    target = config.tmp_dir or tempfile.gettempdir()
+    try:
+        free_bytes = int(shutil.disk_usage(target).free)
+    except OSError:
+        raise ApiError(
+            "tmp_storage_unavailable",
+            "Temporary storage is unavailable.",
+            status_code=500,
+        ) from None
+    if free_bytes < minimum:
+        raise ApiError(
+            "insufficient_tmp_space",
+            "Temporary storage does not meet the configured free-space requirement.",
+            status_code=503,
+            retryable=True,
+        )
+
+
 def _public_error(error: ApiError, request_id: str | None = None) -> JSONResponse:
     payload = {
         "error": {
@@ -118,6 +142,7 @@ def create_app(
 ) -> FastAPI:
     runtime_config = RuntimeConfig.from_env() if config is None else config
     validate_bind_auth_policy(runtime_config)
+    _validate_tmp_space(runtime_config)
     if runtime_config.max_queue_size is None:
         raise ApiError(
             "max_queue_size_required",
