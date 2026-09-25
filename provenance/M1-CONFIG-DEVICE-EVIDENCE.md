@@ -1,11 +1,11 @@
 # M1 configuration, device, and doctor evidence
 
-- Evidence timestamp: `2026-09-25T10:57:39Z`
+- Evidence timestamp: `2026-09-25T11:07:45Z`
 - Repository: `https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference.git`
 - Branch: `main`
 - Starting SHA: `8b5aca0b4f281fbbc50a021a264d4e193c476ed4`
-- Candidate implementation commit: `pending`
-- Remote CI for the candidate: `pending`
+- Candidate implementation commit: `d82a34e550d1a44e6bbea19dc1bdc8e165579f6c`
+- Remote CI for the candidate: `PASS`, workflow `CI` run `36127538669` completed `success` for the exact candidate SHA
 - Python: `3.12.13`
 - Optional system PyTorch: `2.10.0+cpu`; isolated `.venv` PyTorch: `null`
 - Real host inventory: CPU logical `4`; CPU physical `2`; host RAM `33659379712` bytes; CUDA available `false`; GPU count `0`
@@ -32,7 +32,7 @@
 - M2/model-loading scan: `PASS`, no ModelResolver, inference backend, model import, or model-loading implementation
 - Package artifact check: `PASS`, wheel/sdist build completed; target wheel install exposes the `voxcpm-doctor` entry point and source-lock report
 - Working-tree review: `PASS`, only intended M1 files are modified or untracked; generated caches and build artifacts were removed before staging
-- Candidate status: `HOLD` only for remote CI verification; local M1 validation is complete
-- Next authorized action: stage and review the complete M1 diff, commit, push, and verify CI for the exact pushed SHA
+- Candidate status: `PASS`; implementation commit and exact-SHA remote CI are green
+- Next authorized action: create the evidence-only follow-up, push it, and verify CI for the follow-up SHA
 
 The isolated environment emitted a non-fatal pre-existing `sitecustomize` warning about a missing `wrapt` module; commands exited successfully. No model weights were downloaded, staged, or committed.
