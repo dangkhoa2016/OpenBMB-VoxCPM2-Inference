@@ -167,3 +167,40 @@ def test_request_timeout_cancels_and_returns_normalized_504(monkeypatch):
         }
     }
     assert cancelled == ["timeout-one-shot"]
+
+
+def test_stream_backpressure_timeout_releases_dispatcher_and_worker():
+    import time
+
+    from voxcpm_runtime.backend_types import SpeechRequest, StreamRequest
+    from voxcpm_runtime.worker_types import WorkerRequest
+
+    app = create_app(
+        _config(
+            stream_ipc_max_chunks=1,
+            stream_backpressure_timeout_seconds=0.05,
+        ),
+        worker_factory=_worker,
+    )
+    with TestClient(app):
+        runtime = app.state.runtime
+        stream_queue = runtime.submit_stream(
+            WorkerRequest(
+                "slow-consumer",
+                "stream",
+                StreamRequest(SpeechRequest("slow client")),
+            )
+        )
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if runtime.snapshot().ready_workers == 1:
+                break
+            time.sleep(0.02)
+
+        assert runtime.snapshot().ready_workers == 1
+        message = stream_queue.get(timeout=0.5)
+        assert message.kind == "error"
+        assert message.error is not None
+        assert message.error.code == "stream_backpressure_timeout"
+        assert message.error.retryable is True

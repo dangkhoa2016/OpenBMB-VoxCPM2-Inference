@@ -135,6 +135,10 @@ def create_app(
             workers,
             max_pending_requests=runtime_config.max_queue_size,
             stream_queue_chunks=runtime_config.stream_ipc_max_chunks or 4,
+            queue_timeout_seconds=runtime_config.queue_timeout_seconds,
+            stream_backpressure_timeout_seconds=(
+                runtime_config.stream_backpressure_timeout_seconds
+            ),
         )
         app.state.runtime = runtime
         app.state.ready = True

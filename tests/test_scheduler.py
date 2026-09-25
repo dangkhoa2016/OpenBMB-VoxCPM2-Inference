@@ -240,3 +240,28 @@ def test_single_worker_crash_does_not_fail_pending_when_survivor_is_healthy():
     )
     assert any(event.kind == "result" for event in by_request["c"])
     scheduler.close()
+
+
+def test_pending_request_expires_after_queue_timeout():
+    worker = _worker(buffer_chunks=1)
+    scheduler = Scheduler(
+        (worker,),
+        max_pending_requests=2,
+        queue_timeout_seconds=0.05,
+    )
+    scheduler.submit(_stream_request("hold"))
+    assert scheduler.submit(_tts_request("expires")) == "queued"
+    time.sleep(0.08)
+
+    events = scheduler.poll(timeout_seconds=0.01)
+    expired = [
+        event
+        for event in events
+        if event.request_id == "expires" and event.kind == "error"
+    ]
+    assert len(expired) == 1
+    assert expired[0].error is not None
+    assert expired[0].error.code == "queue_timeout"
+    assert expired[0].error.retryable is True
+    assert scheduler.snapshot().pending_requests == 0
+    scheduler.close()
