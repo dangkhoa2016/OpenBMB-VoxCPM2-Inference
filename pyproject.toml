@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openbmb-voxcpm2-inference"
+version = "1.0.0"
+description = "Portable inference engineering for OpenBMB VoxCPM2"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+dependencies = []
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+[project.urls]
+Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"
+"Upstream source" = "https://github.com/OpenBMB/VoxCPM"
+"Reference model" = "https://huggingface.co/openbmb/VoxCPM2"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["voxcpm_runtime*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
