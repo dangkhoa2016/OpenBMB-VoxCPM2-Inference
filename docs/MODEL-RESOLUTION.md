@@ -19,7 +19,7 @@ The core resolver has no Kaggle path literals or discovery logic. Deployment ada
 
 `VOXCPM_OFFLINE=1` prevents the remote acquirer from being called. The resolver does not import or invoke a downloader. An injected acquirer is useful for application integration tests, but its returned path and error details are not trusted and signed URLs or other secret-bearing values are not emitted.
 
-A missing local model in offline mode returns `OfflineResolutionError` with structured, non-sensitive attempt metadata. Network-negative tests replace socket connection, DNS, and UDP primitives with exploding guards and assert zero remote-acquirer calls.
+A missing local model in offline mode returns `OfflineResolutionError` with structured, non-sensitive attempt metadata. Network-negative tests replace socket connection, DNS, and UDP primitives with exploding guards and assert zero remote-acquirer calls. Offline mode constrains model resolution and acquisition behavior; it does not require host-wide network isolation.
 
 ## Kaggle adapter
 
