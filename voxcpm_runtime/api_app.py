@@ -221,7 +221,25 @@ def create_app(
         except SchedulerAdmissionError as error:
             raise _map_scheduler_error(error) from None
         try:
-            message = await asyncio.wrap_future(future)
+            wrapped = asyncio.wrap_future(future)
+            if runtime_config.request_timeout_seconds is None:
+                message = await wrapped
+            else:
+                message = await asyncio.wait_for(
+                    asyncio.shield(wrapped),
+                    timeout=runtime_config.request_timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            try:
+                await asyncio.to_thread(runtime.cancel, request_id)
+            except Exception:
+                pass
+            raise ApiError(
+                "request_timeout",
+                "Request timed out.",
+                status_code=504,
+                retryable=True,
+            ) from None
         except asyncio.CancelledError:
             try:
                 await asyncio.to_thread(runtime.cancel, request_id)

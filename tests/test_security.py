@@ -134,3 +134,36 @@ def test_openapi_and_central_redaction_do_not_expose_tokens():
         "github_pat_SECURITYSECRET123456",
     ):
         assert secret not in redact_text(f"credential={secret}")
+
+
+def test_request_timeout_cancels_and_returns_normalized_504(monkeypatch):
+    from concurrent.futures import Future
+
+    app = create_app(
+        _config(request_timeout_seconds=0.05),
+        worker_factory=_worker,
+    )
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        pending = Future()
+        cancelled = []
+
+        monkeypatch.setattr(runtime, "submit", lambda _request: pending)
+        monkeypatch.setattr(runtime, "cancel", lambda request_id: cancelled.append(request_id))
+
+        response = client.post(
+            "/v1/tts",
+            json={"text": "hello"},
+            headers={**_auth(), "X-Request-ID": "timeout-one-shot"},
+        )
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "error": {
+            "code": "request_timeout",
+            "message": "Request timed out.",
+            "retryable": True,
+            "request_id": None,
+        }
+    }
+    assert cancelled == ["timeout-one-shot"]
