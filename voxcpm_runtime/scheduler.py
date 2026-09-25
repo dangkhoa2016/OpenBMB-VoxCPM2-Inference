@@ -44,6 +44,7 @@ class Scheduler:
         *,
         max_pending_requests: int,
         queue_timeout_seconds: float | None = None,
+        max_inference_seconds: float | None = None,
     ) -> None:
         if not isinstance(workers, tuple) or not workers:
             raise ValueError("workers must be a non-empty tuple")
@@ -69,8 +70,19 @@ class Scheduler:
         self._queue_timeout_seconds = (
             None if queue_timeout_seconds is None else float(queue_timeout_seconds)
         )
+        if max_inference_seconds is not None and (
+            isinstance(max_inference_seconds, bool)
+            or not isinstance(max_inference_seconds, (int, float))
+            or not math.isfinite(float(max_inference_seconds))
+            or max_inference_seconds <= 0
+        ):
+            raise ValueError("max_inference_seconds must be a positive finite number")
+        self._max_inference_seconds = (
+            None if max_inference_seconds is None else float(max_inference_seconds)
+        )
         self._pending: deque[_PendingRequest] = deque()
         self._active: dict[str, str] = {}
+        self._active_started: dict[str, float] = {}
         self._submitted_ids: set[str] = set()
         self._events: deque[WorkerMessage] = deque()
         self._closed = False
@@ -107,6 +119,7 @@ class Scheduler:
             worker = ready[0]
             worker.submit(request)
             self._active[worker.worker_id] = request.request_id
+            self._active_started[worker.worker_id] = time.monotonic()
             self._submitted_ids.add(request.request_id)
             return "dispatched"
         if len(self._pending) >= self._max_pending:
@@ -127,6 +140,7 @@ class Scheduler:
         return "queued"
 
     def poll(self, *, timeout_seconds: float = 0.0) -> tuple[WorkerMessage, ...]:
+        self._expire_active()
         self._expire_pending()
         if self._events:
             return self._drain_events()
@@ -147,6 +161,7 @@ class Scheduler:
             self._events.append(message)
             if message.kind in {"result", "error", "stream_end", "cancelled"}:
                 self._active.pop(worker.worker_id, None)
+                self._active_started.pop(worker.worker_id, None)
                 self._dispatch_pending()
         self._fail_pending_without_healthy_workers()
         return self._drain_events()
@@ -168,6 +183,7 @@ class Scheduler:
                 continue
             cancelled = worker.cancel_active()
             self._active.pop(worker.worker_id, None)
+            self._active_started.pop(worker.worker_id, None)
             event = WorkerMessage(
                 kind="cancelled",
                 worker_id=worker.worker_id,
@@ -201,6 +217,7 @@ class Scheduler:
             except WorkerError:
                 pass
         self._active.clear()
+        self._active_started.clear()
 
     def _ready_workers(self) -> list[WorkerClient]:
         return [worker for worker in self._workers if worker.state is WorkerState.READY]
@@ -227,6 +244,37 @@ class Scheduler:
                 self._pending.appendleft(pending)
                 return
             self._active[worker.worker_id] = pending.request.request_id
+            self._active_started[worker.worker_id] = time.monotonic()
+
+    def _expire_active(self) -> None:
+        timeout = self._max_inference_seconds
+        if timeout is None:
+            return
+        now = time.monotonic()
+        for worker in self._workers:
+            request_id = self._active.get(worker.worker_id)
+            started_at = self._active_started.get(worker.worker_id)
+            if request_id is None or started_at is None or now - started_at < timeout:
+                continue
+            try:
+                worker.cancel_active()
+            except WorkerError:
+                pass
+            self._active.pop(worker.worker_id, None)
+            self._active_started.pop(worker.worker_id, None)
+            self._events.append(
+                WorkerMessage(
+                    kind="error",
+                    worker_id=worker.worker_id,
+                    request_id=request_id,
+                    error=WorkerErrorData(
+                        code="inference_timeout",
+                        message="Inference exceeded the configured time limit.",
+                        retryable=True,
+                    ),
+                )
+            )
+        self._fail_pending_without_healthy_workers()
 
     def _worker_failed(
         self,
@@ -235,6 +283,7 @@ class Scheduler:
         code: str,
     ) -> None:
         self._active.pop(worker.worker_id, None)
+        self._active_started.pop(worker.worker_id, None)
         self._events.append(
             WorkerMessage(
                 kind="error",
