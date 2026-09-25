@@ -265,3 +265,28 @@ def test_pending_request_expires_after_queue_timeout():
     assert expired[0].error.retryable is True
     assert scheduler.snapshot().pending_requests == 0
     scheduler.close()
+
+
+def test_active_request_expires_after_max_inference_timeout():
+    worker = _worker(buffer_chunks=1)
+    scheduler = Scheduler(
+        (worker,),
+        max_pending_requests=1,
+        max_inference_seconds=0.02,
+    )
+    assert scheduler.submit(_stream_request("slow-inference")) == "dispatched"
+    time.sleep(0.05)
+
+    events = scheduler.poll(timeout_seconds=0.0)
+    timed_out = [
+        event
+        for event in events
+        if event.request_id == "slow-inference" and event.kind == "error"
+    ]
+    assert len(timed_out) == 1
+    assert timed_out[0].error is not None
+    assert timed_out[0].error.code == "inference_timeout"
+    assert timed_out[0].error.retryable is True
+    assert worker.state is WorkerState.STOPPED
+    assert not worker.is_alive
+    scheduler.close()
