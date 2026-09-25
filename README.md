@@ -4,7 +4,7 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. The current repository baseline provides verified source provenance, an installable Python package shell, a minimal import test, and CPU-only CI. It does not yet load model weights or provide inference, an API, streaming, scheduling, or deployment support. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration, host and optional CUDA inventory, deterministic CPU/CUDA execution planning, and the `voxcpm-doctor` diagnostic CLI. It does not load model weights or provide inference, an API, streaming, scheduling, or deployment support. It is not production-ready.
 
 ## Scope
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-The bootstrap supports Python 3.10 through 3.12.
+M1 supports Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -26,9 +26,16 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The baseline tests do not download or execute the VoxCPM2 model and do not require a GPU.
+After installation, inspect the current environment without loading a model:
 
-M0 rejects tracked `.bin` files along with model-weight formats. This conservative policy may be refined in a later evidence-backed milestone.
+```bash
+voxcpm-doctor
+VOXCPM_DEVICE=cpu voxcpm-doctor
+```
+
+The doctor emits deterministic JSON. An explicit `VOXCPM_DEVICE=cuda` request fails when no usable CUDA device is visible; it never silently falls back to CPU. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the environment contract and device policy.
+
+M1 tests do not download or execute the VoxCPM2 model and do not require a GPU. M0 rejects tracked `.bin` files along with model-weight formats. This conservative policy may be refined in a later evidence-backed milestone.
 
 ## License
 

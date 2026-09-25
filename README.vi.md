@@ -4,7 +4,7 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. Baseline repository hiện tại cung cấp provenance nguồn đã được xác minh, một package Python có thể cài đặt, kiểm thử import tối thiểu và CI chỉ dùng CPU. Dự án chưa tải trọng số mô hình và chưa cung cấp inference, API, streaming, scheduler hay hỗ trợ triển khai. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình môi trường ổn định, inventory host/CUDA tùy chọn, kế hoạch thực thi CPU/CUDA xác định và CLI chẩn đoán `voxcpm-doctor`. Dự án chưa tải trọng số mô hình và chưa cung cấp inference, API, streaming, scheduler hay hỗ trợ triển khai. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-Baseline hỗ trợ Python 3.10 đến 3.12.
+M1 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -26,9 +26,16 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Baseline test không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU.
+Sau khi cài đặt, có thể kiểm tra môi trường hiện tại mà không tải mô hình:
 
-M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Chính sách thận trọng này có thể được tinh chỉnh sau khi có bằng chứng ở một giai đoạn sau.
+```bash
+voxcpm-doctor
+VOXCPM_DEVICE=cpu voxcpm-doctor
+```
+
+Doctor xuất JSON xác định. Yêu cầu tường minh `VOXCPM_DEVICE=cuda` sẽ thất bại khi không có thiết bị CUDA dùng được; hệ thống không âm thầm chuyển sang CPU. Xem [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) để biết hợp đồng biến môi trường và chính sách thiết bị.
+
+Test M1 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Chính sách thận trọng này có thể được tinh chỉnh sau khi có bằng chứng ở một giai đoạn sau.
 
 ## License
 

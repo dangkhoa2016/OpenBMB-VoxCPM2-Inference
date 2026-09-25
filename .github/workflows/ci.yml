@@ -37,6 +37,45 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Run bootstrap tests
         run: python -m pytest -q
+      - name: Run doctor default smoke
+        shell: bash
+        run: |
+          voxcpm-doctor > /tmp/voxcpm-doctor-default.json
+          python -m json.tool /tmp/voxcpm-doctor-default.json >/dev/null
+      - name: Run doctor explicit CPU smoke
+        shell: bash
+        run: |
+          VOXCPM_DEVICE=cpu voxcpm-doctor > /tmp/voxcpm-doctor-cpu.json
+          python -m json.tool /tmp/voxcpm-doctor-cpu.json >/dev/null
+      - name: Verify explicit CUDA has no CPU fallback
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_DEVICE=cuda voxcpm-doctor > /tmp/voxcpm-doctor-cuda.json 2> /tmp/voxcpm-doctor-cuda.err
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          test -s /tmp/voxcpm-doctor-cuda.err
+      - name: Verify invalid configuration fails
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_DEVICE=banana voxcpm-doctor > /tmp/voxcpm-doctor-invalid.json 2> /tmp/voxcpm-doctor-invalid.err
+          rc_device=$?
+          VOXCPM_GPU_DEVICES='0,,1' voxcpm-doctor > /tmp/voxcpm-doctor-gpu-invalid.json 2> /tmp/voxcpm-doctor-gpu-invalid.err
+          rc_gpu=$?
+          set -e
+          test "$rc_device" -ne 0
+          test "$rc_gpu" -ne 0
+      - name: Verify doctor secret redaction
+        shell: bash
+        run: |
+          DUMMY='m1-ci-redaction-placeholder'
+          VOXCPM_API_TOKEN="$DUMMY" voxcpm-doctor > /tmp/voxcpm-doctor-redaction.json 2> /tmp/voxcpm-doctor-redaction.err
+          if grep -F "$DUMMY" /tmp/voxcpm-doctor-redaction.json /tmp/voxcpm-doctor-redaction.err; then
+            echo "secret value leaked into doctor output"
+            exit 1
+          fi
       - name: Verify version
         run: test "$(tr -d '\r\n' < VERSION)" = "1.0.0"
       - name: Reject tracked model weights
