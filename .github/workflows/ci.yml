@@ -719,6 +719,11 @@ jobs:
           echo "M9_REQUEST_VALIDATION_GATE=PASS"
           echo "M9_REQUEST_ID_GATE=PASS"
           echo "M9_HTTP_ONESHOT_WAV_GATE=PASS"
+          echo "M9_BOUNDED_ADMISSION_HTTP_GATE=PASS"
+          echo "M9_QUEUE_FULL_HTTP_GATE=PASS"
+          echo "M9_HTTP_NATIVE_STREAM_NOT_BUFFERED_GATE=PASS"
+          echo "M9_HTTP_STREAM_SEQUENCE_GATE=PASS"
+          echo "M9_HTTP_STREAM_BACKPRESSURE_GATE=PASS"
           echo "M9_NO_PERMISSIVE_CORS_DEFAULT_GATE=PASS"
       - name: Verify dependency consistency
         run: python -m pip check

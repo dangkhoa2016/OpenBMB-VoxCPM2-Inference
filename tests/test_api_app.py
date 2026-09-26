@@ -157,3 +157,68 @@ def test_openapi_contains_no_token_value():
         schema = client.get("/openapi.json")
         assert schema.status_code == 200
         assert "test-token" not in schema.text
+
+
+def test_http_stream_returns_pcm16_with_public_headers():
+    app = create_app(
+        _config(stream_ipc_max_chunks=2),
+        worker_factory=_fake_worker,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/tts/stream",
+            json={"text": "stream hello"},
+            headers={**_auth(), "X-Request-ID": "stream-http-1"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/octet-stream")
+        assert response.headers["x-request-id"] == "stream-http-1"
+        assert response.headers["x-audio-format"] == "pcm_s16le"
+        assert response.headers["x-audio-sample-rate"] == "48000"
+        assert response.headers["x-audio-channels"] == "1"
+        assert len(response.content) == 480 * 2
+        assert len(response.content) % 2 == 0
+
+
+def test_http_queue_full_maps_real_scheduler_admission_to_429():
+    import time
+
+    from voxcpm_runtime.backend_types import SpeechRequest, StreamRequest
+    from voxcpm_runtime.worker_types import WorkerRequest
+
+    app = create_app(
+        _config(max_queue_size=1, stream_ipc_max_chunks=1),
+        worker_factory=_fake_worker,
+    )
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        runtime.submit_stream(
+            WorkerRequest(
+                "hold-stream",
+                "stream",
+                StreamRequest(SpeechRequest("hold worker busy")),
+            )
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if runtime.snapshot().busy_workers == 1:
+                break
+            time.sleep(0.01)
+        assert runtime.snapshot().busy_workers == 1
+        runtime.submit(
+            WorkerRequest(
+                "pending-one",
+                "synthesize",
+                SpeechRequest("pending"),
+            )
+        )
+        response = client.post(
+            "/v1/tts",
+            json={"text": "rejected"},
+            headers={**_auth(), "X-Request-ID": "queue-full-http"},
+        )
+        assert response.status_code == 429
+        payload = response.json()["error"]
+        assert payload["code"] == "queue_full"
+        assert payload["retryable"] is True
+        runtime.cancel("hold-stream")

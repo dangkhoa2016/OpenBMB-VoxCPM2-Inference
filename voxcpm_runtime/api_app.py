@@ -9,13 +9,13 @@ from contextlib import asynccontextmanager
 from typing import Callable, Final
 
 from fastapi import FastAPI, Header, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from voxcpm_runtime.api_auth import validate_bind_auth_policy, verify_bearer_token
 from voxcpm_runtime.api_errors import ApiError
 from voxcpm_runtime.api_runtime import ApiRuntime
-from voxcpm_runtime.backend_types import AudioResult, SpeechRequest
+from voxcpm_runtime.backend_types import AudioChunk, AudioResult, SpeechRequest, StreamRequest
 from voxcpm_runtime.config import RuntimeConfig
 from voxcpm_runtime.scheduler import SchedulerSnapshot
 from voxcpm_runtime.worker_client import WorkerClient
@@ -39,11 +39,9 @@ def _safe_request_id(value: str | None) -> str:
     return candidate
 
 
-def _wav_bytes(result: AudioResult) -> bytes:
-    if result.channels != 1:
-        raise ApiError("unsupported_audio_channels", "Audio channel layout is unsupported.", status_code=500)
+def _pcm16_bytes(samples: tuple[float, ...]) -> bytes:
     pcm = array("h")
-    for sample in result.samples:
+    for sample in samples:
         value = min(1.0, max(-1.0, float(sample)))
         pcm.append(max(-32768, min(32767, int(round(value * 32767.0)))))
     if pcm.itemsize != 2:
@@ -52,12 +50,18 @@ def _wav_bytes(result: AudioResult) -> bytes:
 
     if sys.byteorder != "little":
         pcm.byteswap()
+    return pcm.tobytes()
+
+
+def _wav_bytes(result: AudioResult) -> bytes:
+    if result.channels != 1:
+        raise ApiError("unsupported_audio_channels", "Audio channel layout is unsupported.", status_code=500)
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as output:
         output.setnchannels(result.channels)
         output.setsampwidth(2)
         output.setframerate(result.sample_rate_hz)
-        output.writeframes(pcm.tobytes())
+        output.writeframes(_pcm16_bytes(result.samples))
     return buffer.getvalue()
 
 
@@ -148,7 +152,11 @@ def create_app(
     async def lifespan(app: FastAPI):
         worker = factory(runtime_config)
         worker.start()
-        runtime = ApiRuntime(worker, max_pending_requests=runtime_config.max_queue_size)
+        runtime = ApiRuntime(
+            worker,
+            max_pending_requests=runtime_config.max_queue_size,
+            stream_queue_chunks=runtime_config.stream_ipc_max_chunks or 4,
+        )
         app.state.runtime = runtime
         app.state.ready = True
         try:
@@ -233,6 +241,80 @@ def create_app(
             content=_wav_bytes(result),
             media_type="audio/wav",
             headers={"X-Request-ID": request_id, "Cache-Control": "no-store"},
+        )
+
+    @app.post("/v1/tts/stream")
+    async def tts_stream(
+        body: TtsRequestModel,
+        authorization: str | None = Header(default=None),
+        x_request_id: str | None = Header(default=None),
+    ):
+        request_id = _safe_request_id(x_request_id)
+        verify_bearer_token(runtime_config, authorization)
+        text = body.text.strip()
+        if not text:
+            raise ApiError("invalid_text", "Text must not be blank.", status_code=422)
+        if runtime_config.max_text_chars is not None and len(text) > runtime_config.max_text_chars:
+            raise ApiError("text_too_long", "Text exceeds the configured limit.", status_code=422)
+        runtime: ApiRuntime = app.state.runtime
+        try:
+            stream_queue = runtime.submit_stream(
+                WorkerRequest(
+                    request_id,
+                    "stream",
+                    StreamRequest(SpeechRequest(text)),
+                )
+            )
+        except SchedulerAdmissionError as error:
+            raise _map_scheduler_error(error) from None
+
+        async def audio_bytes():
+            completed = False
+            try:
+                while True:
+                    message = await asyncio.to_thread(stream_queue.get)
+                    if message.kind == "stream_chunk":
+                        chunk = message.payload
+                        if not isinstance(chunk, AudioChunk):
+                            raise ApiError(
+                                "invalid_stream_chunk",
+                                "Worker returned an invalid stream chunk.",
+                                status_code=500,
+                            )
+                        yield _pcm16_bytes(chunk.samples)
+                        continue
+                    if message.kind == "stream_end":
+                        completed = True
+                        return
+                    if message.kind == "error" and message.error is not None:
+                        raise ApiError(
+                            message.error.code,
+                            message.error.message,
+                            status_code=503 if message.error.retryable else 500,
+                            retryable=message.error.retryable,
+                        )
+                    raise ApiError(
+                        "invalid_stream_message",
+                        "Worker returned an invalid stream message.",
+                        status_code=500,
+                    )
+            finally:
+                if not completed:
+                    try:
+                        await asyncio.to_thread(runtime.cancel, request_id)
+                    except Exception:
+                        pass
+
+        return StreamingResponse(
+            audio_bytes(),
+            media_type="application/octet-stream",
+            headers={
+                "X-Request-ID": request_id,
+                "X-Audio-Format": runtime_config.stream_format.value,
+                "X-Audio-Sample-Rate": str(runtime_config.stream_sample_rate),
+                "X-Audio-Channels": str(runtime_config.stream_channels),
+                "Cache-Control": "no-store",
+            },
         )
 
     return app
