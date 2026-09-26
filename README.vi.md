@@ -4,11 +4,11 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình môi trường ổn định, inventory host/CUDA tùy chọn, kế hoạch thực thi CPU/CUDA xác định và CLI chẩn đoán `voxcpm-doctor`. M2 bổ sung phân giải mô hình local chỉ đọc metadata, discovery giới hạn trên Kaggle mount và CLI `voxcpm-verify-model`. M3 đóng băng hợp đồng backend thuộc dự án với lỗi chuẩn hóa và fake backend xác định, hermetic. M4 bổ sung đường thực thi thật đầu tiên: một backend chỉ-CPU nạp mô hình VoxCPM2 local đã ghim, tổng hợp TTS chuẩn, ghi WAV PCM16 thuộc dự án, và báo cáo telemetry runtime đã che thông tin nhạy cảm qua CLI `voxcpm-generate`. Việc nạp và tổng hợp CPU thật đã được đo thành công trên một host Kaggle, ở mức chậm hơn thời gian thực khoảng `48 lần`; tính đủ bộ nhớ, GPU, các tính năng VoxCPM2 khác, phát trực tuyến, API, scheduler, worker và qualification triển khai vẫn chưa được đánh giá. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình và kế hoạch thực thi CPU/CUDA; M2 bổ sung phân giải model local portable; M3 đóng băng hợp đồng backend thuộc dự án; M4 qualification TTS chuẩn thật trên CPU; và M5 qualification TTS chuẩn thật trên đúng một NVIDIA T4 được chọn tường minh. Canonical run M5 đo trên `cuda:0`, `bfloat16`, `optimize=False`, với peak allocated VRAM 5.194 GiB và real-time factor khoảng 2.97. Thực thi T4x2/multi-GPU, các tính năng VoxCPM2 khác, streaming, API, scheduler, nhiều worker và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
-Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica multi-GPU độc lập. Các chế độ thực thi này là mục tiêu trong tương lai và chỉ được bật sau khi có đo đạc cùng đánh giá chất lượng ở các giai đoạn sau. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
+Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica multi-GPU độc lập. CPU và đúng một GPU CUDA được chọn tường minh hiện đã có runtime path dựa trên bằng chứng qua M5. Các replica multi-GPU độc lập vẫn là mục tiêu tương lai và chỉ được bật sau qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
 
 ## Mô hình và ghi công
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M0 đến M4 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M5 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES="" VOXCPM_DEVICE=cpu VOXCPM_OFFLINE=1 \
   voxcpm-generate --text "Xin chào từ VoxCPM2." --output out.wav --report report.json
 ```
 
-Test M0 đến M4 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; backend thật được kiểm thử với import upstream được giả lập. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) để biết hợp đồng resolver M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) để biết ranh giới M3 cùng giới hạn của nó, và [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) để biết M4 thực sự đo được gì trên CPU, bao gồm lý do đó không phải là tuyên bố 16 GB hay thời gian thực. Chính sách thận trọng này có thể được tinh chỉnh sau khi có bằng chứng ở một giai đoạn sau.
+Test M0 đến M5 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; backend thật được kiểm thử với import upstream được giả lập. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho bằng chứng CPU M4 và [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho đường single-T4 M5 đã đo cùng các giới hạn của nó.
 
 ## License
 
