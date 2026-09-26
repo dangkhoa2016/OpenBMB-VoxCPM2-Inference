@@ -1,4 +1,5 @@
 import io
+import os
 import wave
 
 import pytest
@@ -222,3 +223,80 @@ def test_http_queue_full_maps_real_scheduler_admission_to_429():
         assert payload["code"] == "queue_full"
         assert payload["retryable"] is True
         runtime.cancel("hold-stream")
+
+
+def _two_fake_workers(_config):
+    return (
+        WorkerClient(
+            WorkerBootstrapSpec(worker_id="worker0", backend_kind="fake"),
+            startup_timeout_seconds=5,
+            shutdown_timeout_seconds=2,
+            stream_buffer_chunks=2,
+        ),
+        WorkerClient(
+            WorkerBootstrapSpec(worker_id="worker1", backend_kind="fake"),
+            startup_timeout_seconds=5,
+            shutdown_timeout_seconds=2,
+            stream_buffer_chunks=2,
+        ),
+    )
+
+
+def test_ready_stays_200_with_one_of_two_workers_stopped_then_503_with_zero():
+    app = create_app(_config(), worker_factory=_two_fake_workers)
+    with TestClient(app) as client:
+        initial = client.get("/readyz")
+        assert initial.status_code == 200
+        assert initial.json()["workers"]["ready"] == 2
+
+        worker0, worker1 = app.state.runtime.workers
+        worker0.shutdown()
+        degraded = client.get("/readyz")
+        assert degraded.status_code == 200
+        assert degraded.json()["workers"]["ready"] == 1
+
+        worker1.shutdown()
+        unavailable = client.get("/readyz")
+        assert unavailable.status_code == 503
+        assert unavailable.json()["workers"]["ready"] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="signal-based crash test is POSIX-only")
+def test_ready_stays_200_after_one_active_worker_crashes_when_survivor_is_healthy():
+    import signal
+    import time
+
+    from voxcpm_runtime.backend_types import SpeechRequest, StreamRequest
+    from voxcpm_runtime.worker_types import WorkerRequest
+
+    app = create_app(_config(), worker_factory=_two_fake_workers)
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        runtime.submit_stream(
+            WorkerRequest(
+                "crash-ready-a",
+                "stream",
+                StreamRequest(SpeechRequest("hold worker0")),
+            )
+        )
+        worker0, worker1 = runtime.workers
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and worker0.state.value != "busy":
+            time.sleep(0.01)
+        assert worker0.pid is not None
+        os.kill(worker0.pid, signal.SIGKILL)
+
+        deadline = time.monotonic() + 3
+        response = None
+        while time.monotonic() < deadline:
+            response = client.get("/readyz")
+            body = response.json()
+            if body.get("workers", {}).get("failed") == 1:
+                break
+            time.sleep(0.05)
+        assert response is not None
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workers"]["failed"] == 1
+        assert body["workers"]["ready"] == 1
+        assert worker1.is_alive

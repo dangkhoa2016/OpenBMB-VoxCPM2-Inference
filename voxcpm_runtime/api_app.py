@@ -20,7 +20,8 @@ from voxcpm_runtime.config import RuntimeConfig
 from voxcpm_runtime.scheduler import SchedulerSnapshot
 from voxcpm_runtime.worker_client import WorkerClient
 from voxcpm_runtime.worker_errors import SchedulerAdmissionError
-from voxcpm_runtime.worker_types import WorkerBootstrapSpec, WorkerMessage, WorkerRequest
+from voxcpm_runtime.worker_factory import build_worker_clients, start_worker_clients
+from voxcpm_runtime.worker_types import WorkerMessage, WorkerRequest
 
 
 class TtsRequestModel(BaseModel):
@@ -65,32 +66,8 @@ def _wav_bytes(result: AudioResult) -> bytes:
     return buffer.getvalue()
 
 
-def _default_worker(config: RuntimeConfig) -> WorkerClient:
-    if config.max_queue_size is None:
-        raise ApiError(
-            "max_queue_size_required",
-            "VOXCPM_MAX_QUEUE_SIZE must be configured for the API runtime.",
-            status_code=500,
-        )
-    physical_gpu = None
-    if config.device.value in {"cuda", "auto"}:
-        if config.gpu_devices is None or len(config.gpu_devices) != 1:
-            raise ApiError(
-                "single_gpu_required",
-                "M9 API runtime requires exactly one explicitly selected GPU.",
-                status_code=500,
-            )
-        physical_gpu = config.gpu_devices[0]
-    return WorkerClient(
-        WorkerBootstrapSpec(
-            worker_id="api0",
-            backend_kind="real",
-            physical_gpu_index=physical_gpu,
-        ),
-        startup_timeout_seconds=90.0,
-        shutdown_timeout_seconds=10.0,
-        stream_buffer_chunks=config.stream_ipc_max_chunks or 4,
-    )
+def _default_workers(config: RuntimeConfig) -> tuple[WorkerClient, ...]:
+    return build_worker_clients(config)
 
 
 def _public_error(error: ApiError, request_id: str | None = None) -> JSONResponse:
@@ -136,7 +113,7 @@ def _message_to_result(message: WorkerMessage) -> AudioResult:
 def create_app(
     config: RuntimeConfig | None = None,
     *,
-    worker_factory: Callable[[RuntimeConfig], WorkerClient] | None = None,
+    worker_factory: Callable[[RuntimeConfig], WorkerClient | tuple[WorkerClient, ...]] | None = None,
 ) -> FastAPI:
     runtime_config = RuntimeConfig.from_env() if config is None else config
     validate_bind_auth_policy(runtime_config)
@@ -146,14 +123,15 @@ def create_app(
             "VOXCPM_MAX_QUEUE_SIZE must be configured for the API runtime.",
             status_code=500,
         )
-    factory = _default_worker if worker_factory is None else worker_factory
+    factory = _default_workers if worker_factory is None else worker_factory
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        worker = factory(runtime_config)
-        worker.start()
+        created = factory(runtime_config)
+        workers = created if isinstance(created, tuple) else (created,)
+        start_worker_clients(workers)
         runtime = ApiRuntime(
-            worker,
+            workers,
             max_pending_requests=runtime_config.max_queue_size,
             stream_queue_chunks=runtime_config.stream_ipc_max_chunks or 4,
         )
@@ -187,7 +165,7 @@ def create_app(
             return JSONResponse({"status": "not_ready"}, status_code=503)
         snapshot: SchedulerSnapshot = runtime.snapshot()
         ready = snapshot.ready_workers > 0 or snapshot.busy_workers > 0
-        if not ready or snapshot.failed_workers > 0:
+        if not ready:
             return JSONResponse(
                 {
                     "status": "not_ready",

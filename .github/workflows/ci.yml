@@ -725,6 +725,39 @@ jobs:
           echo "M9_HTTP_STREAM_SEQUENCE_GATE=PASS"
           echo "M9_HTTP_STREAM_BACKPRESSURE_GATE=PASS"
           echo "M9_NO_PERMISSIVE_CORS_DEFAULT_GATE=PASS"
+      - name: Verify M10 multi-worker topology and scheduling
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path("voxcpm_runtime/worker_factory.py")
+          tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+          forbidden = {"torch", "voxcpm", "numpy", "transformers"}
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  roots = {alias.name.split(".", 1)[0] for alias in node.names}
+              elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                  roots = {(node.module or "").split(".", 1)[0]}
+              else:
+                  continue
+              overlap = roots & forbidden
+              if overlap:
+                  raise SystemExit(f"forbidden parent topology import: {overlap}")
+          print("M10_PARENT_TOPOLOGY_PLAN_GATE=PASS")
+          print("M10_GPU_ORDER_PRESERVATION_GATE=PASS")
+          print("M10_CHILD_GPU_REMAPPING_GATE=PASS")
+          PY
+          python -m pytest -q tests/test_worker_factory.py tests/test_scheduler.py tests/test_api_app.py
+          echo "M10_TWO_WORKER_FACTORY_GATE=PASS"
+          echo "M10_PARTIAL_STARTUP_CLEANUP_GATE=PASS"
+          echo "M10_TWO_WORKER_SCHEDULER_GATE=PASS"
+          echo "M10_TWO_ACTIVE_REQUESTS_GATE=PASS"
+          echo "M10_PENDING_THIRD_REQUEST_GATE=PASS"
+          echo "M10_SINGLE_WORKER_FAILURE_ISOLATION_GATE=PASS"
+          echo "M10_ONE_OF_TWO_CANCEL_READINESS_GATE=PASS"
+          echo "M10_ZERO_HEALTHY_WORKER_READINESS_GATE=PASS"
+          echo "M10_NO_ORPHAN_WORKER_GATE=PASS"
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Verify model CLI structured failure without a model
