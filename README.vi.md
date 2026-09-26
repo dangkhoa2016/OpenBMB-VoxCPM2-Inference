@@ -4,11 +4,11 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1-M7 qualification cấu hình, phân giải model local, backend contract, inference CPU/single-T4 thật, các tính năng giọng và native backend streaming. M8 bổ sung worker process boundary dùng `spawn` cùng bounded FIFO scheduler xác định, và qualification một worker thật sở hữu đúng một Tesla T4 qua IPC cho TTS chuẩn và native streaming. Active cancellation dùng process termination, sau đó recovery bằng replacement worker tường minh. T4x2/multi-worker real runtime, FastAPI/HTTP streaming, autoscaling và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1-M8 qualification cấu hình, model local, backend contract, inference CPU/single-T4, các tính năng giọng, native streaming và worker/scheduler boundary dùng `spawn`. M9 bổ sung FastAPI/REST trên đúng Scheduler + WorkerClient đã qualification, gồm bearer auth, health/readiness, one-shot WAV, bounded admission, HTTP PCM16 streaming incremental và client-disconnect cancellation trên một Tesla T4. T4x2/multi-worker real runtime, SSE/WebSocket, autoscaling và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
-Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica GPU độc lập theo process. Qua M8, một worker process có thể sở hữu đúng một backend/device đã qualification trong khi parent vẫn model-free; bounded FIFO admission cùng failure/cancellation semantics được test bằng spawned fake workers. Real multi-worker/multi-GPU replicas và network/API streaming vẫn là mục tiêu tương lai và cần qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
+Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica GPU độc lập theo process. Qua M9, API parent vẫn model-free và mọi inference đều đi qua M8 Scheduler/WorkerClient; một real worker sở hữu đúng một T4 được chọn tường minh. Real multi-worker/multi-GPU replicas vẫn là mục tiêu tương lai và cần qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
 
 ## Mô hình và ghi công
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M0 đến M8 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M9 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-Đây là streaming ở model/backend, không phải HTTP, SSE, WebSocket hay browser media streaming. M8 đặt backend đã qualification phía sau worker process dùng `spawn` và bounded scheduler thuộc dự án; đây là process/IPC boundary nội bộ Python, không phải network API.
+M7 qualification model/backend streaming; M8 bổ sung process/IPC boundary nội bộ; M9 bổ sung HTTP surface đầu tiên đã qualification. Cài API extra bằng `python -m pip install -e '.[api]'`, cấu hình một GPU tường minh, auth và bounded queue, rồi chạy `voxcpm-serve`. Các endpoint đã qualification là `GET /healthz`, `GET /readyz`, `POST /v1/tts` và `POST /v1/tts/stream`. Stream trả raw `pcm_s16le` qua `application/octet-stream`, không phải SSE hay WebSocket.
 
-Test M0 đến M8 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; các real runtime path được bao phủ qua stub/fake boundary trong CI thông thường. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho M4, [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho M5, [`docs/REAL-VOICE-FEATURES.vi.md`](docs/REAL-VOICE-FEATURES.vi.md) cho M6, [`docs/REAL-STREAMING-RUNTIME.vi.md`](docs/REAL-STREAMING-RUNTIME.vi.md) cho M7 và [`docs/WORKER-PROCESS-RUNTIME.vi.md`](docs/WORKER-PROCESS-RUNTIME.vi.md) cho worker/scheduler semantics M8 cùng process isolation single-T4 đã đo.
+CI thông thường M0 đến M9 vẫn GPU-free và model-free. M0 từ chối tracked `.bin` cùng các định dạng model-weight. Xem [`docs/API-RUNTIME.vi.md`](docs/API-RUNTIME.vi.md) cho HTTP contract M9 và ranh giới evidence single-T4 thật.
 
 ## License
 

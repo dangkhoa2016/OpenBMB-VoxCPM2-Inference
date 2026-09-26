@@ -51,6 +51,8 @@ VOXCPM_MAX_CONCURRENT_REQUESTS=
 
 The blank request-limit fields have no M1 numeric defaults.
 
+M9 now implements the first FastAPI surface using this existing contract. The qualified M9 runtime enforces host/port, bearer-auth settings, explicit single-GPU selection, text-length limits, bounded queue capacity, and stream IPC chunk capacity. Universal request deadlines, max-inference enforcement, autoscaling, and multi-worker real runtime remain outside the M9 qualification unless documented separately in `docs/API-RUNTIME.md`.
+
 ### Streaming, storage, logging, and readiness
 
 The loader also stores the declared streaming, output/storage, logging, and readiness values:

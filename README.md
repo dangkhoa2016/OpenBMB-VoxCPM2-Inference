@@ -4,11 +4,11 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. M1-M7 qualify configuration, local model resolution, the backend contract, real CPU/single-T4 one-shot inference, voice features, and native backend streaming. M8 adds a spawn-based worker process boundary plus deterministic bounded FIFO scheduling semantics, and qualifies one real worker owning one Tesla T4 through IPC for standard TTS and native streaming. Active cancellation is a process-boundary termination, followed by explicit replacement-worker recovery. T4x2/multi-worker real runtime, FastAPI/HTTP streaming, autoscaling, and production deployment remain unqualified. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1-M8 qualify configuration, local model resolution, the backend contract, real CPU/single-T4 inference, voice features, native backend streaming, and a spawn-based worker/scheduler boundary. M9 adds a FastAPI/REST surface over that qualified Scheduler + WorkerClient path, including bearer authentication, health/readiness, one-shot WAV responses, bounded admission, incremental PCM16 HTTP streaming, and client-disconnect cancellation on one Tesla T4. T4x2/multi-worker real runtime, SSE/WebSocket, autoscaling, and production deployment remain unqualified. It is not production-ready.
 
 ## Scope
 
-The intended architecture is portable across CPU, a single GPU, and independent process-isolated GPU replicas. Through M8, one worker process can own one qualified backend/device while the parent remains model-free; bounded FIFO admission and failure/cancellation semantics are tested with spawned fake workers. Independent real multi-worker/multi-GPU replicas and network/API streaming remain future targets and require separate measurement. Kaggle is one deployment and qualification target, not the core architecture.
+The intended architecture is portable across CPU, a single GPU, and independent process-isolated GPU replicas. Through M9, the API parent remains model-free and routes all inference through the M8 Scheduler/WorkerClient boundary; one real worker owns one explicitly selected T4. Independent real multi-worker/multi-GPU replicas remain a future target and require separate measurement. Kaggle is one deployment and qualification target, not the core architecture.
 
 ## Model and attribution
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-M0 through M8 support Python 3.10 through 3.12.
+M0 through M9 support Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-This is model/backend streaming, not HTTP, SSE, WebSocket, or browser media streaming. M8 places the qualified backend behind a project-owned spawned worker process and bounded scheduler; this is an internal Python process/IPC boundary, not a network API.
+M7 covers model/backend streaming; M8 adds the internal process/IPC boundary; M9 adds the first qualified HTTP surface. Install the optional API stack with `python -m pip install -e '.[api]'`, configure one explicit GPU, authentication, and a bounded queue, then run `voxcpm-serve`. The qualified endpoints are `GET /healthz`, `GET /readyz`, `POST /v1/tts`, and `POST /v1/tts/stream`. The stream response is raw `pcm_s16le` over `application/octet-stream`, not SSE or WebSocket.
 
-M0 through M8 tests do not download or execute the VoxCPM2 model and do not require a GPU; real runtime paths are covered with stubbed/fake boundaries in normal CI. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for M2, [`docs/BACKEND-CONTRACT.md`](docs/BACKEND-CONTRACT.md) for M3, [`docs/REAL-CPU-RUNTIME.md`](docs/REAL-CPU-RUNTIME.md) for M4, [`docs/REAL-GPU-RUNTIME.md`](docs/REAL-GPU-RUNTIME.md) for M5, [`docs/REAL-VOICE-FEATURES.md`](docs/REAL-VOICE-FEATURES.md) for M6, [`docs/REAL-STREAMING-RUNTIME.md`](docs/REAL-STREAMING-RUNTIME.md) for M7, and [`docs/WORKER-PROCESS-RUNTIME.md`](docs/WORKER-PROCESS-RUNTIME.md) for M8 worker/scheduler semantics and measured single-T4 process isolation.
+M0 through M9 normal CI remains GPU-free and model-free. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/API-RUNTIME.md`](docs/API-RUNTIME.md) for the M9 HTTP contract and measured real single-T4 evidence boundaries.
 
 ## License
 
