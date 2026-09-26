@@ -4,11 +4,11 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration and CPU/CUDA execution planning; M2 adds portable local model resolution; M3 freezes the project-owned backend contract; M4 qualifies real CPU standard TTS; M5 qualifies real standard TTS on one explicitly selected NVIDIA T4; M6 qualifies the remaining one-shot voice features; and M7 qualifies the pinned upstream native streaming path for standard TTS, voice design, voice clone, and audio continuation on one Tesla T4. Measured M7 streams used `cuda:0`, `bfloat16`, and `optimize=False`, with peak allocated VRAM between 5.35 GiB and 5.53 GiB. T4x2/multi-GPU execution, HTTP/API streaming, scheduling, multiple workers, and production deployment remain unqualified. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1-M7 qualify configuration, local model resolution, the backend contract, real CPU/single-T4 one-shot inference, voice features, and native backend streaming. M8 adds a spawn-based worker process boundary plus deterministic bounded FIFO scheduling semantics, and qualifies one real worker owning one Tesla T4 through IPC for standard TTS and native streaming. Active cancellation is a process-boundary termination, followed by explicit replacement-worker recovery. T4x2/multi-worker real runtime, FastAPI/HTTP streaming, autoscaling, and production deployment remain unqualified. It is not production-ready.
 
 ## Scope
 
-The intended architecture is portable across CPU, a single GPU, and independent multi-GPU replicas. CPU, one explicitly selected CUDA GPU, one-shot voice features, and native backend streaming now have evidence-backed runtime paths through M7. Independent multi-GPU replicas and network/API streaming remain future targets and will be enabled only after separate measurement and qualification. Kaggle is one deployment and qualification target, not the core architecture.
+The intended architecture is portable across CPU, a single GPU, and independent process-isolated GPU replicas. Through M8, one worker process can own one qualified backend/device while the parent remains model-free; bounded FIFO admission and failure/cancellation semantics are tested with spawned fake workers. Independent real multi-worker/multi-GPU replicas and network/API streaming remain future targets and require separate measurement. Kaggle is one deployment and qualification target, not the core architecture.
 
 ## Model and attribution
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-M0 through M7 support Python 3.10 through 3.12.
+M0 through M8 support Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-This is model/backend streaming, not HTTP, SSE, WebSocket, or browser media streaming.
+This is model/backend streaming, not HTTP, SSE, WebSocket, or browser media streaming. M8 places the qualified backend behind a project-owned spawned worker process and bounded scheduler; this is an internal Python process/IPC boundary, not a network API.
 
-M0 through M7 tests do not download or execute the VoxCPM2 model and do not require a GPU; the real backend is covered with a stubbed upstream import. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for M2, [`docs/BACKEND-CONTRACT.md`](docs/BACKEND-CONTRACT.md) for M3, [`docs/REAL-CPU-RUNTIME.md`](docs/REAL-CPU-RUNTIME.md) for M4, [`docs/REAL-GPU-RUNTIME.md`](docs/REAL-GPU-RUNTIME.md) for M5, [`docs/REAL-VOICE-FEATURES.md`](docs/REAL-VOICE-FEATURES.md) for M6, and [`docs/REAL-STREAMING-RUNTIME.md`](docs/REAL-STREAMING-RUNTIME.md) for the measured M7 native-streaming path and its limits.
+M0 through M8 tests do not download or execute the VoxCPM2 model and do not require a GPU; real runtime paths are covered with stubbed/fake boundaries in normal CI. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for M2, [`docs/BACKEND-CONTRACT.md`](docs/BACKEND-CONTRACT.md) for M3, [`docs/REAL-CPU-RUNTIME.md`](docs/REAL-CPU-RUNTIME.md) for M4, [`docs/REAL-GPU-RUNTIME.md`](docs/REAL-GPU-RUNTIME.md) for M5, [`docs/REAL-VOICE-FEATURES.md`](docs/REAL-VOICE-FEATURES.md) for M6, [`docs/REAL-STREAMING-RUNTIME.md`](docs/REAL-STREAMING-RUNTIME.md) for M7, and [`docs/WORKER-PROCESS-RUNTIME.md`](docs/WORKER-PROCESS-RUNTIME.md) for M8 worker/scheduler semantics and measured single-T4 process isolation.
 
 ## License
 

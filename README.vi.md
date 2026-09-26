@@ -4,11 +4,11 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình và kế hoạch thực thi CPU/CUDA; M2 bổ sung phân giải model local portable; M3 đóng băng hợp đồng backend thuộc dự án; M4 qualification TTS chuẩn thật trên CPU; M5 qualification TTS chuẩn thật trên đúng một NVIDIA T4; M6 qualification các tính năng giọng one-shot còn lại; và M7 qualification native streaming của upstream đã ghim cho TTS chuẩn, thiết kế giọng, nhân bản giọng và nối tiếp âm thanh trên một Tesla T4. Các stream M7 đo trên `cuda:0`, `bfloat16`, `optimize=False`, với peak allocated VRAM khoảng 5.35 GiB đến 5.53 GiB. T4x2/multi-GPU, HTTP/API streaming, scheduler, nhiều worker và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1-M7 qualification cấu hình, phân giải model local, backend contract, inference CPU/single-T4 thật, các tính năng giọng và native backend streaming. M8 bổ sung worker process boundary dùng `spawn` cùng bounded FIFO scheduler xác định, và qualification một worker thật sở hữu đúng một Tesla T4 qua IPC cho TTS chuẩn và native streaming. Active cancellation dùng process termination, sau đó recovery bằng replacement worker tường minh. T4x2/multi-worker real runtime, FastAPI/HTTP streaming, autoscaling và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
-Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica multi-GPU độc lập. CPU, đúng một GPU CUDA được chọn tường minh, các tính năng giọng one-shot và native backend streaming hiện đã có runtime path dựa trên bằng chứng qua M7. Các replica multi-GPU độc lập và network/API streaming vẫn là mục tiêu tương lai và chỉ được bật sau qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
+Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica GPU độc lập theo process. Qua M8, một worker process có thể sở hữu đúng một backend/device đã qualification trong khi parent vẫn model-free; bounded FIFO admission cùng failure/cancellation semantics được test bằng spawned fake workers. Real multi-worker/multi-GPU replicas và network/API streaming vẫn là mục tiêu tương lai và cần qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
 
 ## Mô hình và ghi công
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M0 đến M7 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M8 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-Đây là streaming ở model/backend, không phải HTTP, SSE, WebSocket hay browser media streaming.
+Đây là streaming ở model/backend, không phải HTTP, SSE, WebSocket hay browser media streaming. M8 đặt backend đã qualification phía sau worker process dùng `spawn` và bounded scheduler thuộc dự án; đây là process/IPC boundary nội bộ Python, không phải network API.
 
-Test M0 đến M7 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; backend thật được kiểm thử với import upstream được giả lập. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho M4, [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho M5, [`docs/REAL-VOICE-FEATURES.vi.md`](docs/REAL-VOICE-FEATURES.vi.md) cho M6 và [`docs/REAL-STREAMING-RUNTIME.vi.md`](docs/REAL-STREAMING-RUNTIME.vi.md) cho native streaming M7 đã đo cùng các giới hạn của nó.
+Test M0 đến M8 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; các real runtime path được bao phủ qua stub/fake boundary trong CI thông thường. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho M4, [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho M5, [`docs/REAL-VOICE-FEATURES.vi.md`](docs/REAL-VOICE-FEATURES.vi.md) cho M6, [`docs/REAL-STREAMING-RUNTIME.vi.md`](docs/REAL-STREAMING-RUNTIME.vi.md) cho M7 và [`docs/WORKER-PROCESS-RUNTIME.vi.md`](docs/WORKER-PROCESS-RUNTIME.vi.md) cho worker/scheduler semantics M8 cùng process isolation single-T4 đã đo.
 
 ## License
 
