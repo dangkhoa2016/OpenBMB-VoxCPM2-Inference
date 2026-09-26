@@ -4,11 +4,11 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration and CPU/CUDA execution planning; M2 adds portable local model resolution; M3 freezes the project-owned backend contract; M4 qualifies real CPU standard TTS; M5 qualifies real standard TTS on one explicitly selected NVIDIA T4; and M6 qualifies the three remaining one-shot voice features: voice design, voice clone, and audio continuation. The measured M6 runs used `cuda:0`, `bfloat16`, and `optimize=False` on exactly one Tesla T4, with peak allocated VRAM between 5.18 GiB and 5.40 GiB. T4x2/multi-GPU execution, streaming, an API, scheduling, multiple workers, and production deployment remain unqualified. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1 provides stable environment configuration and CPU/CUDA execution planning; M2 adds portable local model resolution; M3 freezes the project-owned backend contract; M4 qualifies real CPU standard TTS; M5 qualifies real standard TTS on one explicitly selected NVIDIA T4; M6 qualifies the remaining one-shot voice features; and M7 qualifies the pinned upstream native streaming path for standard TTS, voice design, voice clone, and audio continuation on one Tesla T4. Measured M7 streams used `cuda:0`, `bfloat16`, and `optimize=False`, with peak allocated VRAM between 5.35 GiB and 5.53 GiB. T4x2/multi-GPU execution, HTTP/API streaming, scheduling, multiple workers, and production deployment remain unqualified. It is not production-ready.
 
 ## Scope
 
-The intended architecture is portable across CPU, a single GPU, and independent multi-GPU replicas. CPU, one explicitly selected CUDA GPU, and the one-shot voice features now have evidence-backed runtime paths through M6. Independent multi-GPU replicas remain a future target and will be enabled only after separate measurement and qualification. Kaggle is one deployment and qualification target, not the core architecture.
+The intended architecture is portable across CPU, a single GPU, and independent multi-GPU replicas. CPU, one explicitly selected CUDA GPU, one-shot voice features, and native backend streaming now have evidence-backed runtime paths through M7. Independent multi-GPU replicas and network/API streaming remain future targets and will be enabled only after separate measurement and qualification. Kaggle is one deployment and qualification target, not the core architecture.
 
 ## Model and attribution
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-M0 through M6 support Python 3.10 through 3.12.
+M0 through M7 support Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -61,9 +61,16 @@ voxcpm-generate --text "Và đây là phần tiếp theo." \
   --prompt-text "Xin chào, đây là giọng nói tham chiếu." --output continuation.wav
 ```
 
-`--voice-instruction` cannot be combined with reference or prompt audio, `--reference-audio` cannot be combined with prompt audio or prompt text in this milestone, and `--prompt-audio` and `--prompt-text` must appear together. Reference audio is read only from the local filesystem, is never fetched remotely, and never appears in a public error or report. No streaming flags exist yet.
+`--voice-instruction` cannot be combined with reference or prompt audio, `--reference-audio` cannot be combined with prompt audio or prompt text, and `--prompt-audio` and `--prompt-text` must appear together. Reference audio is read only from the local filesystem, is never fetched remotely, and never appears in a public error or report. M7 adds backend-native streaming through the same CLI; `--stream` consumes project-owned `AudioChunk` values and writes one validation WAV only after the stream completes:
 
-M0 through M6 tests do not download or execute the VoxCPM2 model and do not require a GPU; the real backend is covered with a stubbed upstream import. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for M2, [`docs/BACKEND-CONTRACT.md`](docs/BACKEND-CONTRACT.md) for M3, [`docs/REAL-CPU-RUNTIME.md`](docs/REAL-CPU-RUNTIME.md) for M4 CPU evidence, [`docs/REAL-GPU-RUNTIME.md`](docs/REAL-GPU-RUNTIME.md) for the measured M5 single-T4 standard-TTS path, and [`docs/REAL-VOICE-FEATURES.md`](docs/REAL-VOICE-FEATURES.md) for the measured M6 one-shot voice features and their limits.
+```bash
+voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
+  --output streamed.wav --report streamed-report.json
+```
+
+This is model/backend streaming, not HTTP, SSE, WebSocket, or browser media streaming.
+
+M0 through M7 tests do not download or execute the VoxCPM2 model and do not require a GPU; the real backend is covered with a stubbed upstream import. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) for M2, [`docs/BACKEND-CONTRACT.md`](docs/BACKEND-CONTRACT.md) for M3, [`docs/REAL-CPU-RUNTIME.md`](docs/REAL-CPU-RUNTIME.md) for M4, [`docs/REAL-GPU-RUNTIME.md`](docs/REAL-GPU-RUNTIME.md) for M5, [`docs/REAL-VOICE-FEATURES.md`](docs/REAL-VOICE-FEATURES.md) for M6, and [`docs/REAL-STREAMING-RUNTIME.md`](docs/REAL-STREAMING-RUNTIME.md) for the measured M7 native-streaming path and its limits.
 
 ## License
 

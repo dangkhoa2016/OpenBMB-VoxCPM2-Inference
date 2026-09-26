@@ -13,7 +13,7 @@ The contract is defined without PyTorch, NumPy, Transformers, audio-library, Fas
 | `design(request)` | Generate speech with a project-owned voice instruction | `AudioResult` |
 | `clone(request)` | Generate speech conditioned on a reference-audio descriptor | `AudioResult` |
 | `continue_audio(request)` | Continue from reference audio and its transcript | `AudioResult` |
-| `stream(request)` | Generate deterministic audio chunks without HTTP framing | `Iterator[AudioChunk]` |
+| `stream(request)` | Generate ordered audio chunks without HTTP framing | `Iterator[AudioChunk]` |
 | `close()` | Move a backend to closed state | `None` |
 
 The pinned upstream source at commit `f772e498a45fbb5fb8e13fbf9b9c48be9fe33e69` was inspected for semantics only. Ordinary text generation maps to `SpeechRequest`; textual voice design maps to `VoiceDesignRequest`; reference-audio cloning maps to `CloneRequest`; and prefix-audio continuation with its transcript maps to `ContinuationRequest`. M3 does not expose upstream argument names, classes, prompt caches, tensors, or implementation flags.

@@ -4,11 +4,11 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình và kế hoạch thực thi CPU/CUDA; M2 bổ sung phân giải model local portable; M3 đóng băng hợp đồng backend thuộc dự án; M4 qualification TTS chuẩn thật trên CPU; M5 qualification TTS chuẩn thật trên đúng một NVIDIA T4 được chọn tường minh; và M6 qualification ba tính năng giọng one-shot còn lại: thiết kế giọng, nhân bản giọng, và nối tiếp âm thanh. Các run M6 đo trên `cuda:0`, `bfloat16`, `optimize=False` trên đúng một Tesla T4, với peak allocated VRAM trong khoảng 5.18 GiB đến 5.40 GiB. Thực thi T4x2/multi-GPU, streaming, API, scheduler, nhiều worker và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1 cung cấp cấu hình và kế hoạch thực thi CPU/CUDA; M2 bổ sung phân giải model local portable; M3 đóng băng hợp đồng backend thuộc dự án; M4 qualification TTS chuẩn thật trên CPU; M5 qualification TTS chuẩn thật trên đúng một NVIDIA T4; M6 qualification các tính năng giọng one-shot còn lại; và M7 qualification native streaming của upstream đã ghim cho TTS chuẩn, thiết kế giọng, nhân bản giọng và nối tiếp âm thanh trên một Tesla T4. Các stream M7 đo trên `cuda:0`, `bfloat16`, `optimize=False`, với peak allocated VRAM khoảng 5.35 GiB đến 5.53 GiB. T4x2/multi-GPU, HTTP/API streaming, scheduler, nhiều worker và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
-Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica multi-GPU độc lập. CPU, đúng một GPU CUDA được chọn tường minh, và các tính năng giọng one-shot hiện đã có runtime path dựa trên bằng chứng qua M6. Các replica multi-GPU độc lập vẫn là mục tiêu tương lai và chỉ được bật sau qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
+Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica multi-GPU độc lập. CPU, đúng một GPU CUDA được chọn tường minh, các tính năng giọng one-shot và native backend streaming hiện đã có runtime path dựa trên bằng chứng qua M7. Các replica multi-GPU độc lập và network/API streaming vẫn là mục tiêu tương lai và chỉ được bật sau qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
 
 ## Mô hình và ghi công
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M0 đến M6 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M7 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -61,9 +61,16 @@ voxcpm-generate --text "Và đây là phần tiếp theo." \
   --prompt-text "Xin chào, đây là giọng nói tham chiếu." --output continuation.wav
 ```
 
-`--voice-instruction` không được kết hợp với reference hay prompt audio, `--reference-audio` không được kết hợp với prompt audio hay prompt text trong milestone này, và `--prompt-audio` cùng `--prompt-text` phải xuất hiện cùng nhau. Reference audio chỉ được đọc từ filesystem local, không bao giờ được tải từ xa, và không bao giờ xuất hiện trong error public hay report public. Chưa có cờ streaming nào.
+`--voice-instruction` không được kết hợp với reference hay prompt audio, `--reference-audio` không được kết hợp với prompt audio hay prompt text, và `--prompt-audio` cùng `--prompt-text` phải xuất hiện cùng nhau. Reference audio chỉ được đọc từ filesystem local, không bao giờ được tải từ xa và không xuất hiện trong error/report public. M7 bổ sung backend-native streaming qua cùng CLI; `--stream` tiêu thụ các `AudioChunk` thuộc dự án và chỉ ghi một validation WAV sau khi stream hoàn tất:
 
-Test M0 đến M6 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; backend thật được kiểm thử với import upstream được giả lập. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho bằng chứng CPU M4, [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho đường TTS chuẩn single-T4 M5 đã đo, và [`docs/REAL-VOICE-FEATURES.vi.md`](docs/REAL-VOICE-FEATURES.vi.md) cho các tính năng giọng one-shot M6 đã đo cùng các giới hạn của chúng.
+```bash
+voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
+  --output streamed.wav --report streamed-report.json
+```
+
+Đây là streaming ở model/backend, không phải HTTP, SSE, WebSocket hay browser media streaming.
+
+Test M0 đến M7 không tải hoặc chạy mô hình VoxCPM2 và không yêu cầu GPU; backend thật được kiểm thử với import upstream được giả lập. M0 từ chối mọi file `.bin` được Git theo dõi cùng với các định dạng trọng số mô hình. Xem [`docs/MODEL-RESOLUTION.md`](docs/MODEL-RESOLUTION.md) cho M2, [`docs/BACKEND-CONTRACT.vi.md`](docs/BACKEND-CONTRACT.vi.md) cho M3, [`docs/REAL-CPU-RUNTIME.vi.md`](docs/REAL-CPU-RUNTIME.vi.md) cho M4, [`docs/REAL-GPU-RUNTIME.vi.md`](docs/REAL-GPU-RUNTIME.vi.md) cho M5, [`docs/REAL-VOICE-FEATURES.vi.md`](docs/REAL-VOICE-FEATURES.vi.md) cho M6 và [`docs/REAL-STREAMING-RUNTIME.vi.md`](docs/REAL-STREAMING-RUNTIME.vi.md) cho native streaming M7 đã đo cùng các giới hạn của nó.
 
 ## License
 

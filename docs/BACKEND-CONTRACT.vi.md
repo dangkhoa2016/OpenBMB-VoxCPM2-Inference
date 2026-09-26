@@ -13,7 +13,7 @@ Hợp đồng được định nghĩa mà không cần PyTorch, NumPy, Transform
 | `design(request)` | Tổng hợp giọng nói với chỉ dẫn thiết kế giọng thuộc dự án | `AudioResult` |
 | `clone(request)` | Tổng hợp giọng nói có điều kiện từ descriptor audio tham chiếu | `AudioResult` |
 | `continue_audio(request)` | Tiếp tục từ audio tham chiếu và transcript của audio đó | `AudioResult` |
-| `stream(request)` | Tạo chunk audio xác định mà không có framing HTTP | `Iterator[AudioChunk]` |
+| `stream(request)` | Tạo các chunk audio có thứ tự mà không có framing HTTP | `Iterator[AudioChunk]` |
 | `close()` | Chuyển backend sang trạng thái closed | `None` |
 
 Nguồn upstream đã pin tại commit `f772e498a45fbb5fb8e13fbf9b9c48be9fe33e69` chỉ được đọc để xác định ngữ nghĩa. Tạo giọng nói thông thường từ văn bản ánh xạ thành `SpeechRequest`; thiết kế giọng bằng văn bản ánh xạ thành `VoiceDesignRequest`; clone từ audio tham chiếu ánh xạ thành `CloneRequest`; tiếp tục từ audio tiền tố kèm transcript ánh xạ thành `ContinuationRequest`. M3 không công khai tên tham số, class, prompt cache, tensor hay cờ implementation của upstream.
