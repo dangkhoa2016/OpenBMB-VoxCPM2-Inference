@@ -4,11 +4,11 @@ Portable inference engineering for the OpenBMB VoxCPM2 model family.
 
 ## Status
 
-This project is in early development toward its first `v1.0.0` release. M1-M8 qualify configuration, local model resolution, the backend contract, real CPU/single-T4 inference, voice features, native backend streaming, and a spawn-based worker/scheduler boundary. M9 adds a FastAPI/REST surface over that qualified Scheduler + WorkerClient path, including bearer authentication, health/readiness, one-shot WAV responses, bounded admission, incremental PCM16 HTTP streaming, and client-disconnect cancellation on one Tesla T4. T4x2/multi-worker real runtime, SSE/WebSocket, autoscaling, and production deployment remain unqualified. It is not production-ready.
+This project is in early development toward its first `v1.0.0` release. M1-M9 qualify configuration, local model resolution, real CPU/single-T4 inference, voice features, native streaming, process isolation, bounded scheduling, and the FastAPI/REST surface. M10 qualifies one FastAPI parent with two independent real worker processes on two Tesla T4 GPUs, including GPU ownership, parallel HTTP TTS/streaming, bounded admission, degraded readiness, failure isolation, offline local-model operation, and measured resource cleanup. SSE/WebSocket, autoscaling, tensor parallelism, model sharding, and production deployment remain unqualified. It is not production-ready.
 
 ## Scope
 
-The intended architecture is portable across CPU, a single GPU, and independent process-isolated GPU replicas. Through M9, the API parent remains model-free and routes all inference through the M8 Scheduler/WorkerClient boundary; one real worker owns one explicitly selected T4. Independent real multi-worker/multi-GPU replicas remain a future target and require separate measurement. Kaggle is one deployment and qualification target, not the core architecture.
+The intended architecture is portable across CPU, a single GPU, and independent process-isolated GPU replicas. Through M10, the API parent remains model-free and routes inference through the Scheduler/WorkerClient boundary. The qualified T4x2 topology uses two independent model replicas, one process per physical GPU; it does not split one model across GPUs. Kaggle is one deployment and qualification target, not the core architecture.
 
 ## Model and attribution
 
@@ -18,7 +18,7 @@ This is an independent engineering project. It is not an official OpenBMB releas
 
 ## Development
 
-M0 through M9 support Python 3.10 through 3.12.
+M0 through M10 support Python 3.10 through 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-M7 covers model/backend streaming; M8 adds the internal process/IPC boundary; M9 adds the first qualified HTTP surface. Install the optional API stack with `python -m pip install -e '.[api]'`, configure one explicit GPU, authentication, and a bounded queue, then run `voxcpm-serve`. The qualified endpoints are `GET /healthz`, `GET /readyz`, `POST /v1/tts`, and `POST /v1/tts/stream`. The stream response is raw `pcm_s16le` over `application/octet-stream`, not SSE or WebSocket.
+M7 covers model/backend streaming; M8 adds the internal process/IPC boundary; M9 adds the HTTP surface; M10 qualifies two real independent GPU workers behind the same API parent. Install the optional API stack with `python -m pip install -e '.[api]'`, configure explicit GPUs, authentication, and a bounded queue, then run `voxcpm-serve`. For the qualified T4x2 path use `VOXCPM_DEVICE=cuda`, `VOXCPM_GPU_DEVICES=0,1`, and `VOXCPM_WORKERS=2`. The qualified endpoints are `GET /healthz`, `GET /readyz`, `POST /v1/tts`, and `POST /v1/tts/stream`. The stream response is raw `pcm_s16le` over `application/octet-stream`, not SSE or WebSocket.
 
-M0 through M9 normal CI remains GPU-free and model-free. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/API-RUNTIME.md`](docs/API-RUNTIME.md) for the M9 HTTP contract and measured real single-T4 evidence boundaries.
+M0 through M10 normal CI remains GPU-free and model-free. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/API-RUNTIME.md`](docs/API-RUNTIME.md) for the HTTP contract and [`docs/T4X2-TWO-WORKER-RUNTIME.md`](docs/T4X2-TWO-WORKER-RUNTIME.md) for the measured M10 T4x2 boundary.
 
 ## License
 

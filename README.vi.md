@@ -4,11 +4,11 @@ Kỹ thuật inference portable cho họ mô hình OpenBMB VoxCPM2.
 
 ## Trạng thái
 
-Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1-M8 qualification cấu hình, model local, backend contract, inference CPU/single-T4, các tính năng giọng, native streaming và worker/scheduler boundary dùng `spawn`. M9 bổ sung FastAPI/REST trên đúng Scheduler + WorkerClient đã qualification, gồm bearer auth, health/readiness, one-shot WAV, bounded admission, HTTP PCM16 streaming incremental và client-disconnect cancellation trên một Tesla T4. T4x2/multi-worker real runtime, SSE/WebSocket, autoscaling và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
+Dự án đang ở giai đoạn phát triển ban đầu hướng tới bản phát hành `v1.0.0` đầu tiên. M1-M9 qualification cấu hình, model local, inference CPU/single-T4, các tính năng giọng, native streaming, process isolation, bounded scheduling và FastAPI/REST. M10 qualification một FastAPI parent với hai real worker độc lập trên hai Tesla T4, gồm GPU ownership, HTTP TTS/streaming song song, bounded admission, degraded readiness, failure isolation, offline local-model operation và resource cleanup đã đo. SSE/WebSocket, autoscaling, tensor parallelism, model sharding và production deployment vẫn chưa được qualification. Dự án chưa sẵn sàng cho production.
 
 ## Phạm vi
 
-Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica GPU độc lập theo process. Qua M9, API parent vẫn model-free và mọi inference đều đi qua M8 Scheduler/WorkerClient; một real worker sở hữu đúng một T4 được chọn tường minh. Real multi-worker/multi-GPU replicas vẫn là mục tiêu tương lai và cần qualification riêng. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
+Kiến trúc mục tiêu là portable trên CPU, một GPU và các replica GPU độc lập theo process. Qua M10, API parent vẫn model-free và mọi inference đi qua Scheduler/WorkerClient. Topology T4x2 đã qualification dùng hai model replica độc lập, mỗi process sở hữu một physical GPU; hệ thống không chia một model qua hai GPU. Kaggle là một mục tiêu triển khai và qualification, không phải kiến trúc lõi.
 
 ## Mô hình và ghi công
 
@@ -18,7 +18,7 @@ Trọng số mô hình không được lưu trong repository này. Mô hình tha
 
 ## Phát triển
 
-M0 đến M9 hỗ trợ Python 3.10 đến 3.12.
+M0 đến M10 hỗ trợ Python 3.10 đến 3.12.
 
 ```bash
 python -m pip install -e .
@@ -68,9 +68,9 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-M7 qualification model/backend streaming; M8 bổ sung process/IPC boundary nội bộ; M9 bổ sung HTTP surface đầu tiên đã qualification. Cài API extra bằng `python -m pip install -e '.[api]'`, cấu hình một GPU tường minh, auth và bounded queue, rồi chạy `voxcpm-serve`. Các endpoint đã qualification là `GET /healthz`, `GET /readyz`, `POST /v1/tts` và `POST /v1/tts/stream`. Stream trả raw `pcm_s16le` qua `application/octet-stream`, không phải SSE hay WebSocket.
+M7 qualification model/backend streaming; M8 bổ sung process/IPC boundary nội bộ; M9 bổ sung HTTP surface; M10 qualification hai real GPU worker độc lập dưới cùng API parent. Cài API extra bằng `python -m pip install -e '.[api]'`, cấu hình GPU tường minh, auth và bounded queue, rồi chạy `voxcpm-serve`. Với T4x2 đã qualification, dùng `VOXCPM_DEVICE=cuda`, `VOXCPM_GPU_DEVICES=0,1` và `VOXCPM_WORKERS=2`. Các endpoint đã qualification là `GET /healthz`, `GET /readyz`, `POST /v1/tts` và `POST /v1/tts/stream`. Stream trả raw `pcm_s16le` qua `application/octet-stream`, không phải SSE hay WebSocket.
 
-CI thông thường M0 đến M9 vẫn GPU-free và model-free. M0 từ chối tracked `.bin` cùng các định dạng model-weight. Xem [`docs/API-RUNTIME.vi.md`](docs/API-RUNTIME.vi.md) cho HTTP contract M9 và ranh giới evidence single-T4 thật.
+CI thông thường M0 đến M10 vẫn GPU-free và model-free. M0 từ chối tracked `.bin` cùng các định dạng model-weight. Xem [`docs/API-RUNTIME.vi.md`](docs/API-RUNTIME.vi.md) cho HTTP contract và [`docs/T4X2-TWO-WORKER-RUNTIME.vi.md`](docs/T4X2-TWO-WORKER-RUNTIME.vi.md) cho ranh giới M10 T4x2 đã đo.
 
 ## License
 

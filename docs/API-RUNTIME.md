@@ -269,6 +269,12 @@ WAV duration                   3.20 s
 WAV SHA-256                    d63bfc47661567410c8c459d94de081a2a65a7fb1e1a939e3fed7b6a136f0088
 ```
 
+## M10 two-worker extension
+
+M10 extends the same API surface to two independent real workers on two physical Tesla T4 GPUs. The API parent still does not own a model or CUDA compute context. The qualified configuration is `VOXCPM_DEVICE=cuda`, `VOXCPM_GPU_DEVICES=0,1`, `VOXCPM_WORKERS=2`, and `VOXCPM_MAX_QUEUE_SIZE=1`.
+
+With two workers, readiness is degraded-capacity aware: two healthy workers -> 200, one healthy worker -> 200, and zero healthy workers -> 503 while `/healthz` remains 200. Admission with one pending slot is A/B active, C pending, D -> 429 `queue_full`. M10 also qualifies two concurrent native PCM streams and one-worker disconnect/failure isolation. No automatic worker respawn is added. See `docs/T4X2-TWO-WORKER-RUNTIME.md` and `provenance/M10-REAL-T4X2-TWO-WORKER-EVIDENCE.md`.
+
 ## Configuration fields not newly enforced by M9
 
 M9 enforces the fields needed for the qualified surface, including host/port, auth, explicit GPU selection, text length, queue capacity, and stream IPC chunk capacity.

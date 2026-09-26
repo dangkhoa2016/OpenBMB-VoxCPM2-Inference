@@ -223,6 +223,12 @@ duration                       3.20 s
 WAV SHA-256                    d63bfc47661567410c8c459d94de081a2a65a7fb1e1a939e3fed7b6a136f0088
 ```
 
+## M10 mở rộng hai worker
+
+M10 mở rộng cùng HTTP surface sang hai real worker độc lập trên hai physical Tesla T4. API parent vẫn không sở hữu model hay CUDA compute context. Cấu hình đã qualification là `VOXCPM_DEVICE=cuda`, `VOXCPM_GPU_DEVICES=0,1`, `VOXCPM_WORKERS=2` và `VOXCPM_MAX_QUEUE_SIZE=1`.
+
+Readiness phản ánh degraded capacity: hai worker khỏe -> 200, còn một worker khỏe -> 200, và zero healthy worker -> 503 trong khi `/healthz` vẫn 200. Với một pending slot: A/B active, C pending, D -> 429 `queue_full`. M10 cũng qualification hai native PCM stream song song và isolation khi một worker/request bị disconnect hoặc fail. Không có auto-respawn. Xem `docs/T4X2-TWO-WORKER-RUNTIME.vi.md` và `provenance/M10-REAL-T4X2-TWO-WORKER-EVIDENCE.md`.
+
 ## Các trường cấu hình chưa được M9 enforce mới
 
 M9 enforce các trường cần cho surface đã qualification, gồm host/port, auth, single-GPU selection tường minh, giới hạn độ dài text, bounded queue capacity và stream IPC chunk capacity.

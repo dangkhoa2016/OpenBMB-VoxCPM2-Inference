@@ -51,7 +51,7 @@ VOXCPM_MAX_CONCURRENT_REQUESTS=
 
 The blank request-limit fields have no M1 numeric defaults.
 
-M9 now implements the first FastAPI surface using this existing contract. The qualified M9 runtime enforces host/port, bearer-auth settings, explicit single-GPU selection, text-length limits, bounded queue capacity, and stream IPC chunk capacity. Universal request deadlines, max-inference enforcement, autoscaling, and multi-worker real runtime remain outside the M9 qualification unless documented separately in `docs/API-RUNTIME.md`.
+M9 implements the FastAPI surface using this existing contract. M10 separately qualifies explicit multi-worker API topology with `VOXCPM_GPU_DEVICES=0,1` and `VOXCPM_WORKERS=2` on a measured T4x2 host. Each worker receives one physical GPU mapping and sees it child-locally as `cuda:0`; the real backend itself remains single-device/single-worker. Universal request deadlines, max-inference enforcement, autoscaling, tensor parallelism, and model sharding remain outside the qualified contract.
 
 ### Streaming, storage, logging, and readiness
 
