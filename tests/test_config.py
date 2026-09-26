@@ -14,6 +14,7 @@ def test_defaults_preserve_unspecified_numeric_values():
     assert config.device == "auto"
     assert config.gpu_devices is None
     assert config.workers is None
+    assert config.worker_startup_timeout_seconds == 300.0
     assert config.host == "127.0.0.1"
     assert config.port == 8090
     assert config.require_auth is True
@@ -63,12 +64,14 @@ def test_optional_numbers_are_parsed_without_inventing_defaults():
         {
             "VOXCPM_MAX_TEXT_CHARS": "1000",
             "VOXCPM_MAX_REFERENCE_SECONDS": "2.5",
+            "VOXCPM_WORKER_STARTUP_TIMEOUT_SECONDS": "420.5",
             "VOXCPM_STREAM_SAMPLE_RATE": "44100",
             "VOXCPM_STREAM_CHANNELS": "2",
         }
     )
     assert config.max_text_chars == 1000
     assert config.max_reference_seconds == 2.5
+    assert config.worker_startup_timeout_seconds == 420.5
     assert config.stream_sample_rate == 44100
     assert config.stream_channels == 2
 
@@ -78,6 +81,7 @@ def test_optional_numbers_are_parsed_without_inventing_defaults():
     [
         ("VOXCPM_MAX_TEXT_CHARS", "-1"),
         ("VOXCPM_MAX_REFERENCE_SECONDS", "nan"),
+        ("VOXCPM_WORKER_STARTUP_TIMEOUT_SECONDS", "0"),
         ("VOXCPM_STREAM_SAMPLE_RATE", "0"),
         ("VOXCPM_PORT", "65536"),
         ("VOXCPM_READINESS_MODE", "ready"),

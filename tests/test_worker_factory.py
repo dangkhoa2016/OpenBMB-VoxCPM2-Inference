@@ -51,6 +51,7 @@ def test_build_worker_clients_maps_one_worker_per_physical_gpu_in_order():
     assert [worker.worker_id for worker in workers] == ["worker0", "worker1"]
     assert [item[0].physical_gpu_index for item in captured] == [1, 0]
     assert all(item[1]["stream_buffer_chunks"] == 3 for item in captured)
+    assert all(item[1]["startup_timeout_seconds"] == 300.0 for item in captured)
 
 
 def test_build_worker_clients_respects_worker_limit():

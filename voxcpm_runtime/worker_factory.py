@@ -96,7 +96,7 @@ def build_worker_clients(
     return tuple(
         client_builder(
             spec,
-            startup_timeout_seconds=90.0,
+            startup_timeout_seconds=config.worker_startup_timeout_seconds,
             shutdown_timeout_seconds=10.0,
             stream_buffer_chunks=stream_buffer_chunks,
         )

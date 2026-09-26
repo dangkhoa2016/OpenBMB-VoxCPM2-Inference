@@ -320,6 +320,7 @@ class RuntimeConfig:
     device: DeviceMode = DeviceMode.AUTO
     gpu_devices: tuple[int, ...] | None = None
     workers: int | None = None
+    worker_startup_timeout_seconds: float = 300.0
     host: str = "127.0.0.1"
     port: int = 8090
     api_token: str | None = field(default=None, repr=False)
@@ -411,6 +412,7 @@ class RuntimeConfig:
             ):
                 raise ConfigurationError(f"VOXCPM_{name.upper()}", "expected a positive integer")
         positive_float_fields = (
+            "worker_startup_timeout_seconds",
             "max_reference_seconds",
             "max_prompt_audio_seconds",
             "max_output_seconds",
@@ -484,6 +486,7 @@ class RuntimeConfig:
             "device": self.device.value,
             "gpu_devices": self.gpu_devices_spec,
             "workers": self.workers_spec,
+            "worker_startup_timeout_seconds": self.worker_startup_timeout_seconds,
             "host": self.host,
             "port": self.port,
             "api_token_configured": self.api_token_configured,
@@ -564,6 +567,14 @@ class RuntimeConfig:
             device=DeviceMode(device),
             gpu_devices=parse_gpu_devices(values.get("VOXCPM_GPU_DEVICES")),
             workers=parse_workers(values.get("VOXCPM_WORKERS")),
+            worker_startup_timeout_seconds=(
+                _optional_float(
+                    values,
+                    "VOXCPM_WORKER_STARTUP_TIMEOUT_SECONDS",
+                    positive=True,
+                )
+                or 300.0
+            ),
             host=_lexical(values, "VOXCPM_HOST", "127.0.0.1") or "127.0.0.1",
             port=_port(values),
             api_token=_token_value(values),
