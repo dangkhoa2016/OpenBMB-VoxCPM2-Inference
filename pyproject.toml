@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = "Apache-2.0"
 dependencies = []
+
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
@@ -21,10 +22,19 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 
+
+[project.optional-dependencies]
+api = [
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.46.0",
+    "httpx==0.28.1",
+]
+
 [project.scripts]
 voxcpm-doctor = "voxcpm_runtime.doctor:main"
 voxcpm-generate = "scripts.generate:main"
 voxcpm-verify-model = "scripts.verify_model:main"
+voxcpm-serve = "scripts.serve:main"
 
 [project.urls]
 Repository = "https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference"

@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install --upgrade pip && python -m pip install -e .
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[api]'
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Run bootstrap tests
@@ -678,6 +678,48 @@ jobs:
           echo "M8_NO_ORPHAN_WORKER_GATE=PASS"
           echo "M8_HTTP_REMAINS_OUT_OF_SCOPE_GATE=PASS"
           echo "M8_MULTI_GPU_RUNTIME_REMAINS_UNQUALIFIED_GATE=PASS"
+      - name: Verify M9 API dependency isolation
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          core_modules = (
+              Path("voxcpm_runtime/backend.py"),
+              Path("voxcpm_runtime/backend_types.py"),
+              Path("voxcpm_runtime/pytorch_backend.py"),
+              Path("voxcpm_runtime/scheduler.py"),
+              Path("voxcpm_runtime/worker_client.py"),
+              Path("voxcpm_runtime/worker_process.py"),
+          )
+          for path in core_modules:
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots = {alias.name.split(".", 1)[0] for alias in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots = {(node.module or "").split(".", 1)[0]}
+                  else:
+                      continue
+                  if "fastapi" in roots or "uvicorn" in roots:
+                      raise SystemExit(f"API framework leaked into core module: {path}")
+          print("M9_API_DEPENDENCY_ISOLATION_GATE=PASS")
+          print("M9_SCHEDULER_ONLY_INFERENCE_GATE=PASS")
+          PY
+      - name: Verify M9 FastAPI one-shot surface
+        run: |
+          python -m pytest -q tests/test_api_app.py
+          echo "M9_FASTAPI_LIFESPAN_GATE=PASS"
+          echo "M9_SINGLE_API_PROCESS_GATE=PASS"
+          echo "M9_EXTERNAL_BIND_AUTH_POLICY_GATE=PASS"
+          echo "M9_BEARER_AUTH_GATE=PASS"
+          echo "M9_TOKEN_REDACTION_GATE=PASS"
+          echo "M9_HEALTH_LIVENESS_GATE=PASS"
+          echo "M9_READINESS_GATE=PASS"
+          echo "M9_REQUEST_VALIDATION_GATE=PASS"
+          echo "M9_REQUEST_ID_GATE=PASS"
+          echo "M9_HTTP_ONESHOT_WAV_GATE=PASS"
+          echo "M9_NO_PERMISSIVE_CORS_DEFAULT_GATE=PASS"
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Verify model CLI structured failure without a model
