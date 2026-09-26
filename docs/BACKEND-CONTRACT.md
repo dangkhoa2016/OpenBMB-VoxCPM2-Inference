@@ -77,7 +77,7 @@ Every error has a stable machine-readable code, a safe public message, a retryab
 
 The fake canonicalizes the operation and project request fields as sorted UTF-8 JSON, hashes the bytes with SHA-256, and derives bounded binary64 samples. Identical requests produce identical results across repeated calls and fresh instances. Different operation names, text, instructions, reference descriptors, or transcripts affect the deterministic output.
 
-Streaming splits the same full waveform into bounded, non-empty chunks. Sequence values are contiguous, exactly one final chunk is emitted, and concatenating chunk samples equals the equivalent one-shot result.
+For the deterministic fake backend, streaming splits the same full waveform into bounded, non-empty chunks: sequence values are contiguous, exactly one final chunk is emitted, and concatenating chunk samples equals the equivalent fake one-shot result exactly. This exact one-shot equality is a fake-backend guarantee, not a universal requirement for real native streaming implementations. A real backend must preserve request semantics, chunk ordering, non-empty samples, one final chunk, and safe project-owned types, while separately documenting measured native-stream versus one-shot numerical equivalence.
 
 `FakeFailurePlan` is disabled by default. When explicitly configured, a private fake runtime error is normalized at the public boundary, and its private message does not appear in the public error.
 

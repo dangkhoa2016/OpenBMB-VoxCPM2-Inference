@@ -77,7 +77,7 @@ Mỗi lỗi có machine-readable code ổn định, public message an toàn, c�
 
 Fake canonicalize tên thao tác và field request thuộc dự án thành JSON UTF-8 có key sắp xếp, hash byte bằng SHA-256 rồi sinh sample binary64 có biên độ giới hạn. Request giống nhau tạo kết quả giống nhau qua các lần gọi lặp lại và các instance mới. Tên thao tác, văn bản, chỉ dẫn, descriptor tham chiếu hoặc transcript khác nhau làm output xác định thay đổi.
 
-Streaming chia cùng waveform đầy đủ thành chunk giới hạn và không rỗng. Sequence liên tục, có đúng một chunk final, và nối sample của các chunk bằng kết quả one-shot tương đương.
+Với fake backend xác định, streaming chia cùng waveform đầy đủ thành các chunk giới hạn và không rỗng: sequence liên tục, có đúng một chunk final, và nối sample của các chunk bằng chính xác kết quả fake one-shot tương đương. Tính bằng nhau tuyệt đối với one-shot này là bảo đảm của fake backend, không phải yêu cầu phổ quát cho implementation native streaming thật. Real backend phải giữ đúng ngữ nghĩa request, thứ tự chunk, sample không rỗng, đúng một chunk final và kiểu dữ liệu thuộc dự án, đồng thời phải tài liệu hóa riêng mức tương đương số học đo được giữa native stream và one-shot.
 
 `FakeFailurePlan` bị tắt theo mặc định. Khi được cấu hình tường minh, lỗi runtime private của fake được chuẩn hóa tại public boundary và message private không xuất hiện trong lỗi public.
 
