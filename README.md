@@ -70,7 +70,7 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
 
 M7 covers model/backend streaming; M8 adds the internal process/IPC boundary; M9 adds the HTTP surface; M10 qualifies two real independent GPU workers behind the same API parent. Supported execution profile names are now frozen as `cpu`, `cuda-single`, `cuda-replica`, and `auto`, with `gpu` and `multi-gpu` accepted as aliases. Install the optional API stack with `python -m pip install -e '.[api]'`, configure authentication and a bounded queue, then run `voxcpm-serve`. The qualified endpoints are `GET /healthz`, `GET /readyz`, `POST /v1/tts`, and `POST /v1/tts/stream`. The stream response is raw `pcm_s16le` over `application/octet-stream`, not SSE or WebSocket. See [`docs/EXECUTION-PROFILES.md`](docs/EXECUTION-PROFILES.md) for profile semantics.
 
-M0 through M10 normal CI remains GPU-free and model-free. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/API-RUNTIME.md`](docs/API-RUNTIME.md) for the HTTP contract and [`docs/T4X2-TWO-WORKER-RUNTIME.md`](docs/T4X2-TWO-WORKER-RUNTIME.md) for the measured M10 T4x2 boundary.
+M0 through M11 normal CI remains GPU-free and model-free. M0 rejects tracked `.bin` files along with model-weight formats. See [`docs/API-RUNTIME.md`](docs/API-RUNTIME.md) for the HTTP contract and [`docs/T4X2-TWO-WORKER-RUNTIME.md`](docs/T4X2-TWO-WORKER-RUNTIME.md) for the measured M10 T4x2 boundary.
 
 ## License
 
