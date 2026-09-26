@@ -42,28 +42,53 @@ class _State(Enum):
     CLOSED = "closed"
 
 
+def resolve_upstream_device(execution_plan: ExecutionPlan) -> str:
+    """Map a project execution plan onto one explicit upstream device."""
+
+    if not isinstance(execution_plan, ExecutionPlan):
+        raise TypeError("execution_plan must be an ExecutionPlan")
+    if execution_plan.device == "cpu":
+        return "cpu"
+    if execution_plan.device != "cuda":
+        raise BackendUnsupportedError(
+            "The execution device is not qualified by the real backend.",
+            code="device_not_qualified",
+            details={"device": execution_plan.device, "milestone": "M5"},
+        )
+    if (
+        len(execution_plan.selected_gpu_indices) != 1
+        or execution_plan.worker_count != 1
+        or len(execution_plan.worker_gpu_indices) != 1
+    ):
+        raise BackendUnsupportedError(
+            "Multi-GPU execution is not qualified by the real backend yet.",
+            code="multi_gpu_not_qualified",
+            details={"device": "cuda", "milestone": "M5"},
+        )
+    selected = execution_plan.selected_gpu_indices[0]
+    if execution_plan.worker_gpu_indices[0] != selected:
+        raise BackendUnsupportedError(
+            "The CUDA worker mapping is not qualified by the real backend.",
+            code="gpu_worker_mapping_not_qualified",
+            details={"device": "cuda", "milestone": "M5"},
+        )
+    return f"cuda:{selected}"
+
+
 def resolve_upstream_optimize(
     execution_plan: ExecutionPlan,
     optimization_mode: OptimizationMode,
 ) -> bool:
-    """Map the project ``OptimizationMode`` onto the pinned upstream flag.
-
-    M4 defines ``AUTO`` explicitly for CPU only: upstream ``optimize`` is
-    forced to ``False`` because the pinned default performs warm-up and may
-    invoke compilation, which is not a qualified CPU path in this milestone.
-    Non-CPU ``AUTO`` semantics are deliberately left undecided; M5 owns GPU
-    qualification, so an explicit, safe refusal is raised instead of an
-    invented mapping.
-    """
+    """Map project AUTO onto the non-compiled M4/M5 baseline."""
 
     if not isinstance(execution_plan, ExecutionPlan):
         raise TypeError("execution_plan must be an ExecutionPlan")
     if not isinstance(optimization_mode, OptimizationMode):
         raise TypeError("optimization_mode must be an OptimizationMode")
-    if execution_plan.device == "cpu":
+    if execution_plan.device in {"cpu", "cuda"}:
         return False
     raise BackendUnsupportedError(
-        "Upstream optimization semantics for non-CPU devices are not qualified yet.",
+        "Upstream optimization semantics are not qualified for this device.",
         code="optimization_semantics_not_qualified",
         details={
             "device": execution_plan.device,
@@ -85,6 +110,7 @@ class ModelDeviceReport:
     buffer_device_types: tuple[str, ...]
     parameter_count: int
     buffer_count: int
+    expected_device: str | None = None
 
     @property
     def cpu_only(self) -> bool:
@@ -94,11 +120,20 @@ class ModelDeviceReport:
             and set(self.buffer_device_types) <= {"cpu"}
         )
 
+    @property
+    def all_on_expected_device(self) -> bool | None:
+        if self.expected_device is None:
+            return None
+        observed = set(self.parameter_device_types) | set(self.buffer_device_types)
+        return bool(self.parameter_device_types) and observed <= {self.expected_device}
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "all_on_expected_device": self.all_on_expected_device,
             "buffer_count": self.buffer_count,
             "buffer_device_types": list(self.buffer_device_types),
             "cpu_only": self.cpu_only,
+            "expected_device": self.expected_device,
             "parameter_count": self.parameter_count,
             "parameter_device_types": list(self.parameter_device_types),
         }
@@ -145,7 +180,7 @@ def _collect_device_types(
     return device_types, count
 
 
-def inspect_model_devices(model: Any) -> ModelDeviceReport:
+def inspect_model_devices(model: Any, *, expected_device: str | None = None) -> ModelDeviceReport:
     """Collect parameter and buffer device types from a loaded upstream model."""
 
     tts_model = getattr(model, "tts_model", None)
@@ -166,6 +201,7 @@ def inspect_model_devices(model: Any) -> ModelDeviceReport:
         buffer_device_types=tuple(sorted(buffer_types)),
         parameter_count=parameter_count,
         buffer_count=buffer_count,
+        expected_device=expected_device,
     )
 
 
@@ -274,7 +310,7 @@ def _read_sample_rate_hz(model: Any) -> int:
 
 
 class PytorchVoxCPMBackend:
-    """Real local VoxCPM2 backend restricted to CPU standard TTS in M4.
+    """Real local VoxCPM2 backend for qualified CPU and single-GPU TTS.
 
     The upstream package is imported only inside :meth:`load`, so ordinary CI
     never imports ``torch``, ``numpy`` or ``voxcpm`` through this module.
@@ -304,6 +340,7 @@ class PytorchVoxCPMBackend:
             raise TypeError("upstream_name must be a non-empty string")
         self._resolved_model = resolved_model
         self._execution_plan = execution_plan
+        self._upstream_device = resolve_upstream_device(execution_plan)
         self._load_denoiser = load_denoiser
         self._local_files_only = local_files_only
         self._optimize = optimize
@@ -322,6 +359,10 @@ class PytorchVoxCPMBackend:
     @property
     def effective_optimize(self) -> bool:
         return self._optimize
+
+    @property
+    def upstream_device(self) -> str:
+        return self._upstream_device
 
     @property
     def load_denoiser(self) -> bool:
@@ -437,7 +478,7 @@ class PytorchVoxCPMBackend:
                 load_denoiser=self._load_denoiser,
                 local_files_only=self._local_files_only,
                 optimize=self._optimize,
-                device=self._execution_plan.device,
+                device=self._upstream_device,
             )
         except BackendError:
             raise
@@ -471,6 +512,7 @@ class PytorchVoxCPMBackend:
             ("model_source_kind", self._resolved_model.source_kind),
             ("sample_rate_source", "model.tts_model.sample_rate"),
             ("sample_rate_hz", sample_rate_hz),
+            ("upstream_device", self._upstream_device),
             ("upstream_optimize", self._optimize),
         )
 
@@ -488,6 +530,7 @@ class PytorchVoxCPMBackend:
                 ("local_files_only", self._local_files_only),
                 ("model_revision", revision if revision is not None else "unrecorded"),
                 ("model_source_kind", self._resolved_model.source_kind),
+                ("upstream_device", self._upstream_device),
                 ("upstream_optimize", self._optimize),
             ),
         )
@@ -500,5 +543,6 @@ __all__: Final[tuple[str, ...]] = (
     "ModelDeviceReport",
     "PytorchVoxCPMBackend",
     "inspect_model_devices",
+    "resolve_upstream_device",
     "resolve_upstream_optimize",
 )

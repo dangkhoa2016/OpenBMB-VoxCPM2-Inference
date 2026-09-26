@@ -31,6 +31,7 @@ from voxcpm_runtime.pytorch_backend import (
     M4_CAPABILITIES,
     PytorchVoxCPMBackend,
     inspect_model_devices,
+    resolve_upstream_device,
     resolve_upstream_optimize,
 )
 
@@ -126,6 +127,15 @@ def _cpu_plan() -> ExecutionPlan:
     return ExecutionPlan(effective_device="cpu", selected_gpu_indices=(), worker_count=1)
 
 
+def _cuda_plan(index: int = 0) -> ExecutionPlan:
+    return ExecutionPlan(
+        effective_device="cuda",
+        selected_gpu_indices=(index,),
+        worker_count=1,
+        worker_gpu_indices=(index,),
+    )
+
+
 def _backend(
     tmp_path: Path,
     model_factory: Any,
@@ -133,10 +143,11 @@ def _backend(
     optimize: bool = False,
     load_denoiser: bool = False,
     local_files_only: bool = True,
+    execution_plan: ExecutionPlan | None = None,
 ) -> PytorchVoxCPMBackend:
     return PytorchVoxCPMBackend(
         resolved_model=_resolved(tmp_path, model_factory),
-        execution_plan=_cpu_plan(),
+        execution_plan=_cpu_plan() if execution_plan is None else execution_plan,
         load_denoiser=load_denoiser,
         local_files_only=local_files_only,
         optimize=optimize,
@@ -209,17 +220,26 @@ def test_cpu_auto_optimization_maps_to_upstream_false() -> None:
     assert resolve_upstream_optimize(_cpu_plan(), OptimizationMode.AUTO) is False
 
 
-def test_non_cpu_auto_optimization_is_refused_not_invented() -> None:
-    cuda_plan = ExecutionPlan(
+def test_cuda_auto_optimization_maps_to_upstream_false() -> None:
+    assert resolve_upstream_optimize(_cuda_plan(), OptimizationMode.AUTO) is False
+
+
+def test_single_cuda_plan_maps_to_indexed_upstream_device() -> None:
+    assert resolve_upstream_device(_cuda_plan(0)) == "cuda:0"
+    assert resolve_upstream_device(_cuda_plan(1)) == "cuda:1"
+
+
+def test_multi_gpu_plan_is_refused_by_real_backend() -> None:
+    plan = ExecutionPlan(
         effective_device="cuda",
-        selected_gpu_indices=(0,),
-        worker_count=1,
-        worker_gpu_indices=(0,),
+        selected_gpu_indices=(0, 1),
+        worker_count=2,
+        worker_gpu_indices=(0, 1),
     )
     with pytest.raises(BackendUnsupportedError) as caught:
-        resolve_upstream_optimize(cuda_plan, OptimizationMode.AUTO)
-    assert caught.value.code == "optimization_semantics_not_qualified"
-    assert caught.value.details["device"] == "cuda"
+        resolve_upstream_device(plan)
+    assert caught.value.code == "multi_gpu_not_qualified"
+    assert caught.value.details["milestone"] == "M5"
 
 
 def test_resolve_upstream_optimize_validates_types() -> None:
@@ -246,6 +266,29 @@ def test_load_passes_canonical_m4_arguments(
             "optimize": False,
         }
     ]
+
+
+def test_load_passes_indexed_cuda_device(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(
+        tmp_path,
+        model_factory,
+        execution_plan=_cuda_plan(0),
+        optimize=False,
+        load_denoiser=False,
+    )
+    backend.load()
+    assert upstream_stub.pretrained_calls == [
+        {
+            "device": "cuda:0",
+            "hf_model_id": str(backend.resolved_model.path),
+            "load_denoiser": False,
+            "local_files_only": True,
+            "optimize": False,
+        }
+    ]
+    assert backend.upstream_device == "cuda:0"
 
 
 def test_load_uses_resolved_path_without_hard_coding(
@@ -426,6 +469,7 @@ def test_synthesize_reads_real_sample_rate_from_model(
         ("model_source_kind", "explicit-path"),
         ("sample_rate_hz", 24_000),
         ("sample_rate_source", "model.tts_model.sample_rate"),
+        ("upstream_device", "cpu"),
         ("upstream_optimize", False),
     )
 
@@ -660,6 +704,28 @@ def test_inspect_model_devices_detects_non_cpu_tensors() -> None:
     report = inspect_model_devices(model)
     assert report.parameter_device_types == ("cuda:0",)
     assert report.cpu_only is False
+
+
+def test_inspect_model_devices_matches_expected_cuda() -> None:
+    tts_model = _StubTtsModel()
+    tts_model._parameter_device = "cuda"  # type: ignore[attr-defined]
+    tts_model._buffer_device = "cuda"  # type: ignore[attr-defined]
+    model = _StubModel(tts_model=tts_model)
+    report = inspect_model_devices(model, expected_device="cuda")
+    assert report.parameter_device_types == ("cuda",)
+    assert report.buffer_device_types == ("cuda",)
+    assert report.expected_device == "cuda"
+    assert report.all_on_expected_device is True
+    assert report.to_dict()["all_on_expected_device"] is True
+
+
+def test_inspect_model_devices_rejects_mixed_expected_cuda() -> None:
+    tts_model = _StubTtsModel()
+    tts_model._parameter_device = "cuda"  # type: ignore[attr-defined]
+    tts_model._buffer_device = "cpu"  # type: ignore[attr-defined]
+    model = _StubModel(tts_model=tts_model)
+    report = inspect_model_devices(model, expected_device="cuda")
+    assert report.all_on_expected_device is False
 
 
 def test_inspect_model_devices_requires_tts_model() -> None:

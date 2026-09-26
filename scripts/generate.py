@@ -23,6 +23,7 @@ from voxcpm_runtime.runtime_metrics import (
     collect_host_facts,
     current_rss_bytes,
     dependency_versions,
+    observe_gpu_memory,
     observe_torch_cuda,
     redact_value,
 )
@@ -130,6 +131,7 @@ def _backend_report(info: BackendInfo, backend: PytorchVoxCPMBackend) -> dict[st
         "load_denoiser": backend.load_denoiser,
         "local_files_only": backend.local_files_only,
         "model_id": info.model_id,
+        "upstream_device": backend.upstream_device,
         "upstream_optimize": backend.effective_optimize,
     }
 
@@ -237,7 +239,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     report: dict[str, Any] = {
         "schema_version": 1,
         "status": "ok",
-        "project": {"name": "openbmb-voxcpm2-inference", "milestone": "M4"},
+        "project": {"name": "openbmb-voxcpm2-inference", "milestone": "M5"},
         "operation": "load-only" if load_only else "standard-tts",
         "config": {
             "backend": config.backend.value,
@@ -260,6 +262,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "timings": {},
         "memory": {"rss_before_load_bytes": current_rss_bytes()},
         "cuda": {},
+        "gpu_memory": None,
         "backend": {},
         "audio": None,
         "wav": None,
@@ -291,12 +294,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
     import torch
 
     report["cuda"] = observe_torch_cuda(torch).to_dict()
+    if execution_plan.device == "cuda":
+        report["gpu_memory"] = observe_gpu_memory(
+            torch, execution_plan.selected_gpu_indices[0]
+        ).to_dict()
     report["timings"]["load"] = load_timer.to_dict()
     report["memory"]["rss_after_load_bytes"] = current_rss_bytes()
     report["host"] = collect_host_facts().to_dict()
     report["backend"] = _backend_report(info, backend)
     try:
-        report["model_devices"] = inspect_model_devices(backend.loaded_model).to_dict()
+        report["model_devices"] = inspect_model_devices(
+            backend.loaded_model, expected_device=execution_plan.device
+        ).to_dict()
     except BackendError as error:
         report["model_devices"] = {"error": error.to_dict()}
 
@@ -322,6 +331,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     report["timings"]["synthesize"] = generate_timer.to_dict()
     report["memory"]["rss_after_generation_bytes"] = current_rss_bytes()
+    if execution_plan.device == "cuda":
+        report["gpu_memory"] = observe_gpu_memory(
+            torch, execution_plan.selected_gpu_indices[0]
+        ).to_dict()
     report["audio"] = {
         "channels": result.channels,
         "duration_seconds": round(len(result.samples) / result.sample_rate_hz, 6),

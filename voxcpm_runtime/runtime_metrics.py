@@ -245,6 +245,76 @@ def observe_torch_cuda(torch_module: Any) -> TorchCudaObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class GpuMemoryObservation:
+    """CUDA memory facts for one already-selected runtime GPU."""
+
+    torch_imported: bool
+    cuda_available: bool | None = None
+    device_index: int | None = None
+    device_name: str | None = None
+    device_total_memory_bytes: int | None = None
+    compute_capability: str | None = None
+    memory_allocated_bytes: int | None = None
+    memory_reserved_bytes: int | None = None
+    max_memory_allocated_bytes: int | None = None
+    max_memory_reserved_bytes: int | None = None
+    error_type: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "compute_capability": self.compute_capability,
+            "cuda_available": self.cuda_available,
+            "device_index": self.device_index,
+            "device_name": self.device_name,
+            "device_total_memory_bytes": self.device_total_memory_bytes,
+            "error_type": self.error_type,
+            "max_memory_allocated_bytes": self.max_memory_allocated_bytes,
+            "max_memory_reserved_bytes": self.max_memory_reserved_bytes,
+            "memory_allocated_bytes": self.memory_allocated_bytes,
+            "memory_reserved_bytes": self.memory_reserved_bytes,
+            "torch_imported": self.torch_imported,
+        }
+
+
+def observe_gpu_memory(torch_module: Any, device_index: int) -> GpuMemoryObservation:
+    """Record allocation and device facts for a CUDA qualification run."""
+
+    if torch_module is None:
+        return GpuMemoryObservation(torch_imported=False)
+    if isinstance(device_index, bool) or not isinstance(device_index, int) or device_index < 0:
+        raise ValueError("device_index must be a non-negative integer")
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is None:
+        return GpuMemoryObservation(torch_imported=True, error_type="AttributeError")
+    try:
+        available = bool(cuda.is_available())
+        if not available:
+            return GpuMemoryObservation(torch_imported=True, cuda_available=False)
+        props = cuda.get_device_properties(device_index)
+        major = int(getattr(props, "major"))
+        minor = int(getattr(props, "minor"))
+        return GpuMemoryObservation(
+            torch_imported=True,
+            cuda_available=True,
+            device_index=device_index,
+            device_name=str(getattr(props, "name")),
+            device_total_memory_bytes=int(getattr(props, "total_memory")),
+            compute_capability=f"{major}.{minor}",
+            memory_allocated_bytes=int(cuda.memory_allocated(device_index)),
+            memory_reserved_bytes=int(cuda.memory_reserved(device_index)),
+            max_memory_allocated_bytes=int(cuda.max_memory_allocated(device_index)),
+            max_memory_reserved_bytes=int(cuda.max_memory_reserved(device_index)),
+        )
+    except Exception as error:
+        return GpuMemoryObservation(
+            torch_imported=True,
+            cuda_available=True,
+            device_index=device_index,
+            error_type=type(error).__name__,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class HostFacts:
     """Host and process memory facts captured without external dependencies."""
 
@@ -303,6 +373,7 @@ def dependency_versions(names: tuple[str, ...]) -> dict[str, str]:
 
 
 __all__: Final[tuple[str, ...]] = (
+    "GpuMemoryObservation",
     "HostFacts",
     "RuntimeMetricsError",
     "Stopwatch",
@@ -314,6 +385,7 @@ __all__: Final[tuple[str, ...]] = (
     "dependency_versions",
     "host_available_ram_bytes",
     "host_total_ram_bytes",
+    "observe_gpu_memory",
     "observe_torch_cuda",
     "peak_rss_bytes",
     "redact_text",

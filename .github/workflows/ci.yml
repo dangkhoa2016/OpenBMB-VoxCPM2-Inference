@@ -228,6 +228,75 @@ jobs:
               )
           print("M4_LAZY_UPSTREAM_IMPORT_SCAN=PASS")
           PY
+      - name: Verify M5 single-GPU device mapping
+        run: |
+          python - <<'PY'
+          from voxcpm_runtime.config import OptimizationMode
+          from voxcpm_runtime.device import ExecutionPlan
+          from voxcpm_runtime.errors import BackendUnsupportedError
+          from voxcpm_runtime.pytorch_backend import (
+              resolve_upstream_device,
+              resolve_upstream_optimize,
+          )
+
+          one = ExecutionPlan(
+              effective_device="cuda",
+              selected_gpu_indices=(0,),
+              worker_count=1,
+              worker_gpu_indices=(0,),
+          )
+          assert resolve_upstream_device(one) == "cuda:0"
+          assert resolve_upstream_optimize(one, OptimizationMode.AUTO) is False
+
+          multi = ExecutionPlan(
+              effective_device="cuda",
+              selected_gpu_indices=(0, 1),
+              worker_count=2,
+              worker_gpu_indices=(0, 1),
+          )
+          try:
+              resolve_upstream_device(multi)
+          except BackendUnsupportedError as error:
+              assert error.code == "multi_gpu_not_qualified"
+          else:
+              raise AssertionError("multi-GPU plan was not refused")
+          print("M5_SINGLE_GPU_DEVICE_MAPPING_GATE=PASS")
+          print("M5_MULTI_GPU_REFUSAL_GATE=PASS")
+          PY
+      - name: Verify M5 GPU telemetry contract
+        run: |
+          python - <<'PY'
+          from types import SimpleNamespace
+
+          from voxcpm_runtime.runtime_metrics import observe_gpu_memory
+
+          class FakeCuda:
+              def is_available(self):
+                  return True
+              def get_device_properties(self, index):
+                  assert index == 0
+                  return SimpleNamespace(
+                      name="stub-gpu",
+                      total_memory=16_000_000_000,
+                      major=7,
+                      minor=5,
+                  )
+              def memory_allocated(self, index):
+                  return 100
+              def memory_reserved(self, index):
+                  return 200
+              def max_memory_allocated(self, index):
+                  return 300
+              def max_memory_reserved(self, index):
+                  return 400
+
+          payload = observe_gpu_memory(SimpleNamespace(cuda=FakeCuda()), 0).to_dict()
+          assert payload["cuda_available"] is True
+          assert payload["device_index"] == 0
+          assert payload["max_memory_allocated_bytes"] == 300
+          assert payload["max_memory_reserved_bytes"] == 400
+          print("M5_GPU_TELEMETRY_GATE=PASS")
+          PY
       - name: Verify the generate CLI is importable without the upstream stack
         run: |
           python - <<'PY'
