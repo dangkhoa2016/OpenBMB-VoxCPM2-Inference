@@ -290,3 +290,32 @@ def test_active_request_expires_after_max_inference_timeout():
     assert worker.state is WorkerState.STOPPED
     assert not worker.is_alive
     scheduler.close()
+
+
+def test_max_concurrent_requests_limits_active_dispatch():
+    worker0 = _worker("worker0", buffer_chunks=1)
+    worker1 = _worker("worker1", buffer_chunks=1)
+    scheduler = Scheduler(
+        (worker0, worker1),
+        max_pending_requests=2,
+        max_concurrent_requests=1,
+    )
+    assert scheduler.submit(_stream_request("first")) == "dispatched"
+    assert scheduler.submit(_tts_request("second")) == "queued"
+
+    snapshot = scheduler.snapshot()
+    assert snapshot.busy_workers == 1
+    assert snapshot.ready_workers == 1
+    assert snapshot.pending_requests == 1
+
+    terminal = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        for event in scheduler.poll(timeout_seconds=0.2):
+            if event.kind in {"stream_end", "result", "error", "cancelled"}:
+                terminal.append(event.request_id)
+        if "second" in terminal:
+            break
+
+    assert terminal[:2] == ["first", "second"]
+    scheduler.close()

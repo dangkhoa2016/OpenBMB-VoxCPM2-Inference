@@ -45,6 +45,7 @@ class Scheduler:
         max_pending_requests: int,
         queue_timeout_seconds: float | None = None,
         max_inference_seconds: float | None = None,
+        max_concurrent_requests: int | None = None,
     ) -> None:
         if not isinstance(workers, tuple) or not workers:
             raise ValueError("workers must be a non-empty tuple")
@@ -80,6 +81,13 @@ class Scheduler:
         self._max_inference_seconds = (
             None if max_inference_seconds is None else float(max_inference_seconds)
         )
+        if max_concurrent_requests is not None and (
+            isinstance(max_concurrent_requests, bool)
+            or not isinstance(max_concurrent_requests, int)
+            or max_concurrent_requests <= 0
+        ):
+            raise ValueError("max_concurrent_requests must be a positive integer")
+        self._max_concurrent_requests = max_concurrent_requests
         self._pending: deque[_PendingRequest] = deque()
         self._active: dict[str, str] = {}
         self._active_started: dict[str, float] = {}
@@ -115,7 +123,11 @@ class Scheduler:
                 details={"request_id": request.request_id},
             )
         ready = self._ready_workers()
-        if ready:
+        can_dispatch = (
+            self._max_concurrent_requests is None
+            or len(self._active) < self._max_concurrent_requests
+        )
+        if ready and can_dispatch:
             worker = ready[0]
             worker.submit(request)
             self._active[worker.worker_id] = request.request_id
@@ -233,6 +245,11 @@ class Scheduler:
     def _dispatch_pending(self) -> None:
         self._expire_pending()
         while self._pending:
+            if (
+                self._max_concurrent_requests is not None
+                and len(self._active) >= self._max_concurrent_requests
+            ):
+                return
             ready = self._ready_workers()
             if not ready:
                 return

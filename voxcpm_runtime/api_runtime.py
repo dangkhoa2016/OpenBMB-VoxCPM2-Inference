@@ -22,6 +22,7 @@ class ApiRuntime:
         stream_queue_chunks: int = 4,
         queue_timeout_seconds: float | None = None,
         max_inference_seconds: float | None = None,
+        max_concurrent_requests: int | None = None,
         stream_backpressure_timeout_seconds: float | None = None,
     ) -> None:
         if (
@@ -47,6 +48,7 @@ class ApiRuntime:
             max_pending_requests=max_pending_requests,
             queue_timeout_seconds=queue_timeout_seconds,
             max_inference_seconds=max_inference_seconds,
+            max_concurrent_requests=max_concurrent_requests,
         )
         self._stream_queue_chunks = stream_queue_chunks
         self._stream_backpressure_timeout_seconds = (
