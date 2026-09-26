@@ -137,6 +137,114 @@ jobs:
                           raise SystemExit(f"randomized hash used in {path}")
           print("M3_FORBIDDEN_IMPORT_SCAN=PASS")
           PY
+      - name: Verify M4 real backend keeps upstream imports lazy
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          runtime_dir = Path("voxcpm_runtime")
+          real_backend = runtime_dir / "pytorch_backend.py"
+          forbidden = {
+              "aiohttp",
+              "huggingface_hub",
+              "httpx",
+              "numpy",
+              "requests",
+              "torch",
+              "transformers",
+              "voxcpm",
+          }
+
+          def imported_roots(tree):
+              roots = set()
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots.add((node.module or "").split(".", 1)[0])
+              return roots
+
+          def top_level_statements(tree):
+              return {
+                  id(node)
+                  for node in tree.body
+                  if isinstance(
+                      node,
+                      (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.Expr),
+                  )
+              }
+
+          # No runtime module may import the upstream stack at module scope.
+          for path in sorted(runtime_dir.glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              scoped = top_level_statements(tree)
+              for node in ast.walk(tree):
+                  if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                      continue
+                  roots = (
+                      {alias.name.split(".", 1)[0] for alias in node.names}
+                      if isinstance(node, ast.Import)
+                      else {(node.module or "").split(".", 1)[0]}
+                  )
+                  overlap = roots & forbidden
+                  if not overlap:
+                      continue
+                  owner = getattr(node, "parent", None)
+                  del owner
+                  if id(node) in scoped:
+                      raise SystemExit(
+                          f"module-level upstream import in {path}: {sorted(overlap)}"
+                      )
+              # A function-local upstream import is only acceptable in the
+              # real backend, and only for the pinned upstream package itself.
+              if path != real_backend:
+                  offenders = imported_roots(tree) & (forbidden - {"voxcpm"})
+                  if offenders:
+                      raise SystemExit(
+                          f"unexpected runtime import in {path}: {sorted(offenders)}"
+                      )
+
+          # The real backend must reach the pinned upstream package only
+          # through importlib inside its load path, never a static import.
+          tree = ast.parse(real_backend.read_text(encoding="utf-8"), filename=str(real_backend))
+          if imported_roots(tree) & {"voxcpm", "torch", "numpy", "transformers"}:
+              raise SystemExit("the real backend must not statically import upstream")
+          lazy_calls = 0
+          for node in ast.walk(tree):
+              if (
+                  isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "import_module"
+                  and node.args
+                  and isinstance(node.args[0], ast.Constant)
+                  and node.args[0].value == "voxcpm"
+              ):
+                  lazy_calls += 1
+          if lazy_calls != 1:
+              raise SystemExit(
+                  f"the real backend must import upstream exactly once via "
+                  f"importlib, found {lazy_calls}"
+              )
+          print("M4_LAZY_UPSTREAM_IMPORT_SCAN=PASS")
+          PY
+      - name: Verify the generate CLI is importable without the upstream stack
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+
+          completed = subprocess.run(
+              [sys.executable, "-m", "scripts.generate", "--help"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          assert completed.returncode == 0, completed.stderr
+          for flag in ("--text", "--output", "--report", "--load-only"):
+              assert flag in completed.stdout, flag
+          print("M4_GENERATE_CLI_SMOKE=PASS")
+          PY
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Verify model CLI structured failure without a model
