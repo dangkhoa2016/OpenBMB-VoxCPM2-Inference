@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Final
 
 from voxcpm_runtime.backend_types import (
     AudioChunk,
+    AudioReference,
     AudioResult,
     BackendInfo,
     CloneRequest,
@@ -31,9 +34,18 @@ from voxcpm_runtime.model_resolver import ResolvedModel
 
 BACKEND_NAME: Final = "pytorch-voxcpm"
 BACKEND_IMPLEMENTATION: Final = "pinned-upstream-local"
-M4_CAPABILITIES: Final[tuple[str, ...]] = ("synthesize",)
+REAL_BACKEND_CAPABILITIES: Final[tuple[str, ...]] = (
+    "clone",
+    "continue_audio",
+    "design",
+    "synthesize",
+)
 _UPSTREAM_MODULE: Final = "voxcpm"
 _UPSTREAM_SYMBOL: Final = "VoxCPM"
+_CONDITIONING_NONE: Final = "none"
+_CONDITIONING_INSTRUCTION: Final = "instruction"
+_CONDITIONING_REFERENCE: Final = "reference"
+_CONDITIONING_CONTINUATION: Final = "continuation"
 
 
 class _State(Enum):
@@ -79,7 +91,7 @@ def resolve_upstream_optimize(
     execution_plan: ExecutionPlan,
     optimization_mode: OptimizationMode,
 ) -> bool:
-    """Map project AUTO onto the non-compiled M4/M5 baseline."""
+    """Map project AUTO onto the qualified non-compiled CPU/CUDA baseline."""
 
     if not isinstance(execution_plan, ExecutionPlan):
         raise TypeError("execution_plan must be an ExecutionPlan")
@@ -205,6 +217,61 @@ def inspect_model_devices(model: Any, *, expected_device: str | None = None) -> 
     )
 
 
+def build_design_text(text: str, instruction: str) -> str:
+    """Map a project voice-design request onto the pinned upstream text form.
+
+    The pinned upstream CLI wraps the control instruction in parentheses and
+    prefixes the target text with it. The rule stays private to the backend
+    boundary so the public request type keeps carrying the raw instruction.
+    """
+
+    if not isinstance(text, str) or not isinstance(instruction, str):
+        raise TypeError("text and instruction must be strings")
+    control = instruction.strip()
+    return f"({control}){text}" if control else text
+
+
+def validate_local_reference_audio(reference: AudioReference) -> str:
+    """Validate a local audio reference at execution time and return its path.
+
+    The descriptor is never acquired remotely and never inspected for audio
+    content here. Every public failure stays path-neutral so private absolute
+    locations never reach callers or the public runtime report.
+    """
+
+    if not isinstance(reference, AudioReference):
+        raise BackendRequestError(
+            "Backend request is invalid.",
+            details={"field": "reference_audio"},
+        )
+    candidate = reference.local_path
+    try:
+        path = Path(candidate)
+    except (TypeError, ValueError):
+        raise BackendRequestError(
+            "Backend request is invalid.",
+            details={"field": "reference_audio"},
+        ) from None
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not os.path.exists(path):
+        raise BackendRequestError(
+            "The reference audio could not be found.",
+            code="reference_audio_not_found",
+        )
+    if not path.is_file():
+        raise BackendRequestError(
+            "The reference audio is not a regular local file.",
+            code="reference_audio_not_file",
+        )
+    if not os.access(path, os.R_OK):
+        raise BackendRequestError(
+            "The reference audio could not be read.",
+            code="reference_audio_unreadable",
+        )
+    return str(path)
+
+
 def _import_upstream() -> Any:
     """Import the pinned upstream wrapper lazily, inside the real load path."""
 
@@ -224,8 +291,8 @@ def _import_upstream() -> Any:
     return symbol
 
 
-def _waveform_to_samples(waveform: Any) -> tuple[float, ...]:
-    """Convert an upstream waveform into a validated 1-D tuple of floats."""
+def _waveform_to_samples(waveform: Any, *, operation: str) -> tuple[float, ...]:
+    """Convert an upstream waveform into validated samples for one operation."""
 
     if waveform is None:
         raise BackendExecutionError(
@@ -245,7 +312,7 @@ def _waveform_to_samples(waveform: Any) -> tuple[float, ...]:
     except BackendError:
         raise
     except Exception as error:
-        raise normalize_backend_error("synthesize", error) from None
+        raise normalize_backend_error(operation, error) from None
     if not isinstance(raw, (list, tuple)):
         raise BackendExecutionError(
             "The upstream model returned a waveform that could not be read as samples.",
@@ -310,7 +377,7 @@ def _read_sample_rate_hz(model: Any) -> int:
 
 
 class PytorchVoxCPMBackend:
-    """Real local VoxCPM2 backend for qualified CPU and single-GPU TTS.
+    """Real local VoxCPM2 backend for qualified one-shot inference paths.
 
     The upstream package is imported only inside :meth:`load`, so ordinary CI
     never imports ``torch``, ``numpy`` or ``voxcpm`` through this module.
@@ -401,28 +468,31 @@ class PytorchVoxCPMBackend:
         return self._call_normalized("synthesize", lambda: self._synthesize(request))
 
     def design(self, request: VoiceDesignRequest) -> AudioResult:
-        self._reject("design", request, (VoiceDesignRequest,))
-        raise BackendUnsupportedError(
-            "Voice design is not qualified by this backend yet.",
-            code="design_not_qualified",
-            details={"capability": "design", "milestone": "M6"},
-        )
+        self._ensure_ready()
+        if not isinstance(request, VoiceDesignRequest):
+            raise BackendRequestError(
+                "Backend request is invalid.",
+                details={"field": "request"},
+            )
+        return self._call_normalized("design", lambda: self._design(request))
 
     def clone(self, request: CloneRequest) -> AudioResult:
-        self._reject("clone", request, (CloneRequest,))
-        raise BackendUnsupportedError(
-            "Voice cloning is not qualified by this backend yet.",
-            code="clone_not_qualified",
-            details={"capability": "clone", "milestone": "M6"},
-        )
+        self._ensure_ready()
+        if not isinstance(request, CloneRequest):
+            raise BackendRequestError(
+                "Backend request is invalid.",
+                details={"field": "request"},
+            )
+        return self._call_normalized("clone", lambda: self._clone(request))
 
     def continue_audio(self, request: ContinuationRequest) -> AudioResult:
-        self._reject("continue_audio", request, (ContinuationRequest,))
-        raise BackendUnsupportedError(
-            "Audio continuation is not qualified by this backend yet.",
-            code="continue_audio_not_qualified",
-            details={"capability": "continue_audio", "milestone": "M6"},
-        )
+        self._ensure_ready()
+        if not isinstance(request, ContinuationRequest):
+            raise BackendRequestError(
+                "Backend request is invalid.",
+                details={"field": "request"},
+            )
+        return self._call_normalized("continue_audio", lambda: self._continue_audio(request))
 
     def stream(self, request: StreamRequest) -> Iterator[AudioChunk]:
         self._reject("stream", request, (StreamRequest,))
@@ -485,7 +555,7 @@ class PytorchVoxCPMBackend:
         except Exception as error:
             raise normalize_backend_error("load", error) from None
 
-    def _synthesize(self, request: SpeechRequest) -> AudioResult:
+    def _require_model(self) -> Any:
         model = self._model
         if model is None:
             raise BackendStateError(
@@ -493,23 +563,80 @@ class PytorchVoxCPMBackend:
                 code="backend_not_loaded",
                 details={"state": self._state.value},
             )
-        waveform = model.generate(text=request.text)
-        samples = _waveform_to_samples(waveform)
+        return model
+
+    def _upstream_generate(
+        self,
+        operation: str,
+        conditioning: str,
+        generate_kwargs: dict[str, Any],
+    ) -> AudioResult:
+        """Run one qualified one-shot upstream call and build its AudioResult."""
+
+        model = self._require_model()
+        waveform = model.generate(**generate_kwargs)
+        samples = _waveform_to_samples(waveform, operation=operation)
         sample_rate_hz = _read_sample_rate_hz(model)
         return AudioResult(
             samples=samples,
             sample_rate_hz=sample_rate_hz,
             channels=1,
-            metadata=self._result_metadata(sample_rate_hz),
+            metadata=self._result_metadata(
+                sample_rate_hz,
+                operation=operation,
+                conditioning=conditioning,
+            ),
         )
 
-    def _result_metadata(self, sample_rate_hz: int) -> tuple[tuple[str, ErrorDetail], ...]:
+    def _synthesize(self, request: SpeechRequest) -> AudioResult:
+        return self._upstream_generate(
+            "synthesize",
+            _CONDITIONING_NONE,
+            {"text": request.text},
+        )
+
+    def _design(self, request: VoiceDesignRequest) -> AudioResult:
+        return self._upstream_generate(
+            "design",
+            _CONDITIONING_INSTRUCTION,
+            {"text": build_design_text(request.text, request.instruction)},
+        )
+
+    def _clone(self, request: CloneRequest) -> AudioResult:
+        reference_path = validate_local_reference_audio(request.reference_audio)
+        return self._upstream_generate(
+            "clone",
+            _CONDITIONING_REFERENCE,
+            {"text": request.text, "reference_wav_path": reference_path},
+        )
+
+    def _continue_audio(self, request: ContinuationRequest) -> AudioResult:
+        reference_path = validate_local_reference_audio(request.reference_audio)
+        return self._upstream_generate(
+            "continue_audio",
+            _CONDITIONING_CONTINUATION,
+            {
+                "text": request.text,
+                "prompt_text": request.reference_transcript,
+                "prompt_wav_path": reference_path,
+            },
+        )
+
+    def _result_metadata(
+        self,
+        sample_rate_hz: int,
+        *,
+        operation: str = "synthesize",
+        conditioning: str = _CONDITIONING_NONE,
+    ) -> tuple[tuple[str, ErrorDetail], ...]:
         revision = self._resolved_model.revision
         return (
             ("backend", BACKEND_NAME),
+            ("conditioning", conditioning),
             ("model_id", self._resolved_model.model_id),
             ("model_revision", revision if revision is not None else "unrecorded"),
             ("model_source_kind", self._resolved_model.source_kind),
+            ("operation", operation),
             ("sample_rate_source", "model.tts_model.sample_rate"),
             ("sample_rate_hz", sample_rate_hz),
             ("upstream_device", self._upstream_device),
@@ -524,7 +651,7 @@ class PytorchVoxCPMBackend:
             loaded=True,
             device=self._execution_plan.device,
             model_id=self._resolved_model.model_id,
-            capabilities=M4_CAPABILITIES,
+            capabilities=REAL_BACKEND_CAPABILITIES,
             metadata=(
                 ("load_denoiser", self._load_denoiser),
                 ("local_files_only", self._local_files_only),
@@ -539,10 +666,12 @@ class PytorchVoxCPMBackend:
 __all__: Final[tuple[str, ...]] = (
     "BACKEND_IMPLEMENTATION",
     "BACKEND_NAME",
-    "M4_CAPABILITIES",
+    "REAL_BACKEND_CAPABILITIES",
     "ModelDeviceReport",
     "PytorchVoxCPMBackend",
+    "build_design_text",
     "inspect_model_devices",
     "resolve_upstream_device",
     "resolve_upstream_optimize",
+    "validate_local_reference_audio",
 )

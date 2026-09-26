@@ -314,6 +314,279 @@ jobs:
               assert flag in completed.stdout, flag
           print("M4_GENERATE_CLI_SMOKE=PASS")
           PY
+      - name: Verify M6 one-shot voice feature mapping without model weights
+        run: |
+          python - <<'PY'
+          import ast
+          import json
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+          from types import ModuleType, SimpleNamespace
+
+          from voxcpm_runtime.backend_types import (
+              AudioReference,
+              CloneRequest,
+              ContinuationRequest,
+              SpeechRequest,
+              StreamRequest,
+              VoiceDesignRequest,
+          )
+          from voxcpm_runtime.config import RuntimeConfig
+          from voxcpm_runtime.device import ExecutionPlan
+          from voxcpm_runtime.errors import (
+              BackendRequestError,
+              BackendUnsupportedError,
+          )
+          from voxcpm_runtime.model_resolver import ModelResolver
+          from voxcpm_runtime.pytorch_backend import (
+              REAL_BACKEND_CAPABILITIES,
+              PytorchVoxCPMBackend,
+              build_design_text,
+              validate_local_reference_audio,
+          )
+
+          calls = []
+
+          class StubModel:
+              tts_model = SimpleNamespace(sample_rate=48000)
+
+              def generate(self, **kwargs):
+                  calls.append(dict(kwargs))
+                  return [0.0, 0.5, -0.5]
+
+          class StubUpstream:
+              @staticmethod
+              def from_pretrained(path, **kwargs):
+                  return StubModel()
+
+          module = ModuleType("voxcpm")
+          module.VoxCPM = StubUpstream
+          sys.modules["voxcpm"] = module
+
+          workspace = Path(tempfile.mkdtemp(prefix="m6-mapping-"))
+          config_path = workspace / "config.json"
+          config_path.write_text(
+              json.dumps(
+                  {
+                      "architecture": "voxcpm2",
+                      "lm_config": {
+                          "hidden_size": 8,
+                          "intermediate_size": 16,
+                          "num_attention_heads": 2,
+                          "num_key_value_heads": 1,
+                          "num_hidden_layers": 1,
+                          "vocab_size": 16,
+                      },
+                      "encoder_config": {
+                          "hidden_dim": 8,
+                          "ffn_dim": 16,
+                          "num_heads": 2,
+                          "num_layers": 1,
+                      },
+                      "dit_config": {
+                          "hidden_dim": 8,
+                          "ffn_dim": 16,
+                          "num_heads": 2,
+                          "num_layers": 1,
+                          "cfm_config": {},
+                      },
+                      "audio_vae_config": {
+                          "encoder_dim": 8,
+                          "encoder_rates": [2],
+                          "decoder_dim": 8,
+                          "decoder_rates": [2],
+                          "sample_rate": 16000,
+                          "out_sample_rate": 48000,
+                      },
+                  }
+              ),
+              encoding="utf-8",
+          )
+          (workspace / "model.safetensors").write_bytes(b"stub")
+          (workspace / "audiovae.safetensors").write_bytes(b"stub")
+          (workspace / "tokenizer.json").write_text(
+              json.dumps(
+                  {
+                      "version": "1.0",
+                      "model": {"type": "BPE", "vocab": {"<unk>": 0, "<s>": 1, "</s>": 2}},
+                  }
+              ),
+              encoding="utf-8",
+          )
+          (workspace / "tokenizer_config.json").write_text(
+              json.dumps({"tokenizer_class": "VoxCPM2Tokenizer"}),
+              encoding="utf-8",
+          )
+          resolved = ModelResolver().resolve(
+              RuntimeConfig(model_path=str(workspace), offline=True)
+          )
+          backend = PytorchVoxCPMBackend(
+              resolved_model=resolved,
+              execution_plan=ExecutionPlan(
+                  effective_device="cpu", selected_gpu_indices=(), worker_count=1
+              ),
+          )
+          backend.load()
+
+          reference = workspace / "reference.wav"
+          reference.write_bytes(b"RIFF0000WAVEfmt ")
+
+          # Voice design: instruction is folded into the text exactly once.
+          backend.design(
+              VoiceDesignRequest(
+                  text="Xin chào từ VoxCPM2.",
+                  instruction="giọng nữ ấm áp, bình tĩnh",
+              )
+          )
+          assert calls[-1] == {
+              "text": "(giọng nữ ấm áp, bình tĩnh)Xin chào từ VoxCPM2."
+          }
+          assert build_design_text("target", "calm") == "(calm)target"
+          assert build_design_text("target", "") == "target"
+          design_result = backend.design(
+              VoiceDesignRequest(text="a", instruction="b")
+          )
+          assert design_result.sample_rate_hz == 48000
+          assert dict(design_result.metadata)["operation"] == "design"
+          assert dict(design_result.metadata)["conditioning"] == "instruction"
+          print("M6_VOICE_DESIGN_MAPPING_GATE=PASS")
+
+          # Clone: local reference only, never a prompt pair.
+          backend.clone(
+              CloneRequest(
+                  text="Xin chào, đây là phép thử clone giọng.",
+                  reference_audio=AudioReference(local_path=str(reference)),
+              )
+          )
+          assert set(calls[-1]) == {"text", "reference_wav_path"}
+          assert calls[-1]["reference_wav_path"] == str(reference)
+          assert validate_local_reference_audio(
+              AudioReference(local_path=str(reference))
+          ) == str(reference)
+          for missing, code in (
+              (workspace / "absent.wav", "reference_audio_not_found"),
+              (workspace, "reference_audio_not_file"),
+          ):
+              try:
+                  validate_local_reference_audio(AudioReference(local_path=str(missing)))
+              except BackendRequestError as error:
+                  assert error.code == code, (error.code, code)
+              else:
+                  raise AssertionError(f"reference {missing.name} was not refused")
+          print("M6_VOICE_CLONE_MAPPING_GATE=PASS")
+
+          # Continuation: prompt pair, never a reference path.
+          backend.continue_audio(
+              ContinuationRequest(
+                  text="Và đây là phần tiếp theo.",
+                  reference_audio=AudioReference(local_path=str(reference)),
+                  reference_transcript="Xin chào, đây là giọng nói tham chiếu.",
+              )
+          )
+          assert set(calls[-1]) == {"text", "prompt_text", "prompt_wav_path"}
+          assert "reference_wav_path" not in calls[-1]
+          print("M6_AUDIO_CONTINUATION_MAPPING_GATE=PASS")
+
+          # No absolute path may reach a normalized public error envelope.
+          secret_path = workspace / "private-voice-sample.wav"
+          secret_path.write_bytes(b"RIFF0000WAVEfmt ")
+          for operation, request in (
+              (
+                  "clone",
+                  CloneRequest(
+                      text="a",
+                      reference_audio=AudioReference(local_path=str(secret_path)),
+                  ),
+              ),
+              (
+                  "continue_audio",
+                  ContinuationRequest(
+                      text="a",
+                      reference_audio=AudioReference(local_path=str(secret_path)),
+                      reference_transcript="m6-private-transcript",
+                  ),
+              ),
+          ):
+              class Exploding:
+                  def generate(self, **kwargs):
+                      raise ValueError(
+                          f"decode failed for {secret_path} "
+                          f"m6-private-transcript"
+                      )
+
+                  tts_model = SimpleNamespace(sample_rate=48000)
+
+              backend._model = Exploding()
+              try:
+                  getattr(backend, operation)(request)
+              except Exception as error:
+                  envelope = json.dumps(error.to_dict(), default=str)
+                  assert str(workspace) not in envelope, envelope
+                  assert "private-voice-sample.wav" not in envelope, envelope
+                  assert "m6-private-transcript" not in envelope, envelope
+              else:
+                  raise AssertionError(f"{operation} failure was not normalized")
+          print("M6_REFERENCE_PATH_REDACTION_GATE=PASS")
+
+          # Capabilities advertise one-shot features and still omit streaming.
+          assert REAL_BACKEND_CAPABILITIES == (
+              "clone",
+              "continue_audio",
+              "design",
+              "synthesize",
+          )
+          info = backend.load()
+          assert info.capabilities == REAL_BACKEND_CAPABILITIES
+          assert "stream" not in info.capabilities
+          print("M6_REAL_BACKEND_CAPABILITY_GATE=PASS")
+
+          try:
+              backend.stream(StreamRequest(SpeechRequest(text="a")))
+          except BackendUnsupportedError as error:
+              assert error.code == "stream_not_qualified"
+              assert error.details["milestone"] == "M7"
+          else:
+              raise AssertionError("streaming stayed qualified")
+          source = Path("voxcpm_runtime/pytorch_backend.py").read_text(encoding="utf-8")
+          assert "generate_streaming" not in source
+          assert "StreamRequest(request)" not in source
+          print("M6_STREAMING_REMAINS_UNQUALIFIED_GATE=PASS")
+
+          # The CLI must reject every unqualified flag combination offline.
+          for arguments in (
+              ["--text", "a", "--voice-instruction", "b", "--reference-audio", str(reference)],
+              ["--text", "a", "--reference-audio", str(reference), "--prompt-text", "b"],
+              ["--text", "a", "--prompt-audio", str(reference)],
+          ):
+              completed = subprocess.run(
+                  [sys.executable, "-m", "scripts.generate", *arguments, "--output", "/tmp/m6-unused.wav"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              assert completed.returncode == 2, completed.stdout
+              payload = json.loads(completed.stdout)
+              assert payload["error"]["code"] == "invalid_request"
+              assert str(workspace) not in completed.stdout
+          for forbidden in ("--stream", "--chunk", "--queue", "--denoise"):
+              assert forbidden not in completed.stdout
+
+          # No runtime module may acquire audio or reach the network.
+          for path in sorted(Path("voxcpm_runtime").glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                      if node.func.id in {"urlopen", "urlretrieve"}:
+                          raise SystemExit(f"network acquisition in {path}")
+                  if isinstance(node, ast.Attribute):
+                      if node.attr in {"urlopen", "urlretrieve", "download", "from_pretrained"}:
+                          if path.name == "pytorch_backend.py" and node.attr == "from_pretrained":
+                              continue
+                          raise SystemExit(f"acquisition call in {path}: {node.attr}")
+          print("M6_NO_REMOTE_AUDIO_ACQUISITION_GATE=PASS")
+          PY
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Verify model CLI structured failure without a model

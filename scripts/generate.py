@@ -6,11 +6,19 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from voxcpm_runtime.backend_types import BackendInfo, SpeechRequest
+from voxcpm_runtime.backend_types import (
+    AudioReference,
+    BackendInfo,
+    CloneRequest,
+    ContinuationRequest,
+    OneShotRequest,
+    SpeechRequest,
+    VoiceDesignRequest,
+)
 from voxcpm_runtime.config import ConfigurationError, OptimizationMode, RuntimeConfig
 from voxcpm_runtime.device import DeviceManager, DeviceResolutionError
 from voxcpm_runtime.diagnostics import read_source_lock
-from voxcpm_runtime.errors import BackendError
+from voxcpm_runtime.errors import BackendError, BackendRequestError
 from voxcpm_runtime.model_resolver import ModelResolutionError, ModelResolver
 from voxcpm_runtime.pytorch_backend import (
     PytorchVoxCPMBackend,
@@ -90,6 +98,35 @@ def _parser() -> argparse.ArgumentParser:
         help="Optional path for a machine-readable JSON runtime report.",
     )
     parser.add_argument(
+        "--voice-instruction",
+        default=None,
+        help=(
+            "Voice design instruction. Selects the voice-design operation and "
+            "cannot be combined with reference or prompt audio."
+        ),
+    )
+    parser.add_argument(
+        "--reference-audio",
+        default=None,
+        help=(
+            "Local reference WAV for the voice-clone operation. It is read "
+            "from the local filesystem and is never fetched remotely."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-audio",
+        default=None,
+        help=(
+            "Local prefix WAV for the audio-continuation operation. It must be "
+            "used together with --prompt-text."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-text",
+        default=None,
+        help="Transcript of --prompt-audio for the audio-continuation operation.",
+    )
+    parser.add_argument(
         "--load-only",
         action="store_true",
         help=(
@@ -98,6 +135,120 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+_OPERATION_STANDARD: str = "standard-tts"
+_OPERATION_DESIGN: str = "voice-design"
+_OPERATION_CLONE: str = "voice-clone"
+_OPERATION_CONTINUATION: str = "audio-continuation"
+_OPERATION_LOAD_ONLY: str = "load-only"
+
+
+def _present(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _build_request(
+    namespace: argparse.Namespace,
+) -> tuple[OneShotRequest | None, str, str, str | None]:
+    """Resolve CLI flags into one project request plus its report labels.
+
+    The fourth element is a public validation problem, or None when the flag
+    combination selects exactly one qualified operation.
+    """
+
+    instruction = namespace.voice_instruction
+    reference = namespace.reference_audio
+    prompt_audio = namespace.prompt_audio
+    prompt_text = namespace.prompt_text
+    text = namespace.text
+
+    if _present(instruction) and (
+        _present(reference) or _present(prompt_audio) or _present(prompt_text)
+    ):
+        return None, "", "", (
+            "--voice-instruction cannot be combined with --reference-audio, "
+            "--prompt-audio, or --prompt-text."
+        )
+    if _present(reference) and (_present(prompt_audio) or _present(prompt_text)):
+        return None, "", "", (
+            "--reference-audio cannot be combined with --prompt-audio or "
+            "--prompt-text."
+        )
+    if _present(prompt_audio) != _present(prompt_text):
+        return None, "", "", (
+            "--prompt-audio and --prompt-text must be used together."
+        )
+    if _present(instruction):
+        return (
+            VoiceDesignRequest(text=text or "", instruction=instruction),
+            _OPERATION_DESIGN,
+            "instruction",
+            None,
+        )
+    if _present(reference):
+        return (
+            CloneRequest(
+                text=text or "",
+                reference_audio=AudioReference(local_path=reference),
+            ),
+            _OPERATION_CLONE,
+            "reference",
+            None,
+        )
+    if _present(prompt_audio):
+        return (
+            ContinuationRequest(
+                text=text or "",
+                reference_audio=AudioReference(local_path=prompt_audio),
+                reference_transcript=prompt_text,
+            ),
+            _OPERATION_CONTINUATION,
+            "continuation",
+            None,
+        )
+    return SpeechRequest(text=text or ""), _OPERATION_STANDARD, "none", None
+
+
+def _request_summary(
+    request: OneShotRequest,
+    text: str | None,
+    instruction: str | None,
+) -> dict[str, Any]:
+    """Summarize a request using counts only, never content or paths."""
+
+    uses_reference = isinstance(request, (CloneRequest, ContinuationRequest))
+    return {
+        "input_text_characters": len(text or ""),
+        "instruction_characters": len(instruction.strip()) if _present(instruction) else 0,
+        "reference_audio_used": uses_reference,
+        "reference_input_kind": "local-file" if uses_reference else "none",
+        "reference_transcript_characters": (
+            len(request.reference_transcript)
+            if isinstance(request, ContinuationRequest)
+            else 0
+        ),
+    }
+
+
+def _dispatch_one_shot(
+    backend: PytorchVoxCPMBackend,
+    request: OneShotRequest,
+) -> Any:
+    """Route one project request to its qualified backend operation."""
+
+    if isinstance(request, VoiceDesignRequest):
+        return backend.design(request)
+    if isinstance(request, CloneRequest):
+        return backend.clone(request)
+    if isinstance(request, ContinuationRequest):
+        return backend.continue_audio(request)
+    if isinstance(request, SpeechRequest):
+        return backend.synthesize(request)
+    raise BackendRequestError(
+        "Backend request is invalid.",
+        details={"field": "request"},
+    )
 
 
 def _resolve_model(config: RuntimeConfig) -> Any:
@@ -175,6 +326,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
             "ArgumentError",
         )
 
+    request: OneShotRequest | None = None
+    operation = _OPERATION_LOAD_ONLY if load_only else _OPERATION_STANDARD
+    conditioning = "none"
+    if not load_only:
+        request, operation, conditioning, problem = _build_request(namespace)
+        if request is None:
+            return _emit_error(
+                "invalid_request",
+                problem or "The requested operation combination is not supported.",
+                "ArgumentError",
+            )
+
     try:
         config = RuntimeConfig.from_env()
     except ConfigurationError as error:
@@ -239,8 +402,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     report: dict[str, Any] = {
         "schema_version": 1,
         "status": "ok",
-        "project": {"name": "openbmb-voxcpm2-inference", "milestone": "M5"},
-        "operation": "load-only" if load_only else "standard-tts",
+        "project": {"name": "openbmb-voxcpm2-inference", "milestone": "M6"},
+        "operation": operation,
+        "request": _request_summary(request, text, namespace.voice_instruction) if request else {},
         "config": {
             "backend": config.backend.value,
             "device_requested": config.requested_device,
@@ -314,22 +478,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
         _finalize(report, report_path)
         return 0
 
-    generate_timer = Stopwatch("synthesize")
+    generate_timer = Stopwatch(operation)
     try:
-        result = backend.synthesize(SpeechRequest(text=text or ""))
+        result = _dispatch_one_shot(backend, request)
     except BackendError as error:
         generate_timer.stop()
         backend.close()
         report["status"] = "error"
         report["error"] = error.to_dict()
-        report["timings"]["synthesize"] = generate_timer.to_dict()
+        report["timings"][operation] = generate_timer.to_dict()
         report["memory"]["rss_after_generation_bytes"] = current_rss_bytes()
         report["host"] = collect_host_facts().to_dict()
         _finalize(report, report_path)
         return 3
     generate_timer.stop()
 
-    report["timings"]["synthesize"] = generate_timer.to_dict()
+    report["timings"][operation] = generate_timer.to_dict()
     report["memory"]["rss_after_generation_bytes"] = current_rss_bytes()
     if execution_plan.device == "cuda":
         report["gpu_memory"] = observe_gpu_memory(
@@ -337,6 +501,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         ).to_dict()
     report["audio"] = {
         "channels": result.channels,
+        "conditioning": conditioning,
         "duration_seconds": round(len(result.samples) / result.sample_rate_hz, 6),
         "input_text_characters": len(text or ""),
         "sample_count": len(result.samples),

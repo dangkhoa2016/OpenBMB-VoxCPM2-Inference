@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 import types
 from pathlib import Path
@@ -28,11 +29,13 @@ from voxcpm_runtime.errors import (
 )
 from voxcpm_runtime.model_resolver import ResolvedModel
 from voxcpm_runtime.pytorch_backend import (
-    M4_CAPABILITIES,
+    REAL_BACKEND_CAPABILITIES,
     PytorchVoxCPMBackend,
+    build_design_text,
     inspect_model_devices,
     resolve_upstream_device,
     resolve_upstream_optimize,
+    validate_local_reference_audio,
 )
 
 _UPSTREAM_MODULE = "voxcpm"
@@ -374,12 +377,18 @@ def test_reopen_after_close_is_rejected(
 # --- BackendInfo / capabilities (F5) ------------------------------------
 
 
-def test_backend_info_advertises_only_synthesize(
+def test_backend_info_advertises_qualified_one_shot_operations(
     tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
 ) -> None:
     info = _backend(tmp_path, model_factory).load()
-    assert info.capabilities == ("synthesize",)
-    assert info.capabilities == M4_CAPABILITIES
+    assert info.capabilities == (
+        "clone",
+        "continue_audio",
+        "design",
+        "synthesize",
+    )
+    assert info.capabilities == REAL_BACKEND_CAPABILITIES
+    assert "stream" not in info.capabilities
     assert info.loaded is True
     assert info.device == "cpu"
     assert info.backend == "pytorch-voxcpm"
@@ -388,27 +397,6 @@ def test_backend_info_advertises_only_synthesize(
 @pytest.mark.parametrize(
     ("operation", "request_factory", "code"),
     [
-        (
-            "design",
-            lambda: VoiceDesignRequest(text="a", instruction="b"),
-            "design_not_qualified",
-        ),
-        (
-            "clone",
-            lambda: CloneRequest(
-                text="a", reference_audio=AudioReference(local_path="reference.wav")
-            ),
-            "clone_not_qualified",
-        ),
-        (
-            "continue_audio",
-            lambda: ContinuationRequest(
-                text="a",
-                reference_audio=AudioReference(local_path="reference.wav"),
-                reference_transcript="b",
-            ),
-            "continue_audio_not_qualified",
-        ),
         ("stream", lambda: StreamRequest(SpeechRequest(text="a")), "stream_not_qualified"),
     ],
 )
@@ -425,15 +413,28 @@ def test_unqualified_capabilities_raise(
     with pytest.raises(BackendUnsupportedError) as caught:
         getattr(backend, operation)(request_factory())
     assert caught.value.code == code
+    assert caught.value.details["milestone"] == "M7"
 
 
-def test_unqualified_capability_rejects_wrong_request_type(
-    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+@pytest.mark.parametrize(
+    ("operation", "request_factory"),
+    [
+        ("design", lambda: object()),
+        ("clone", lambda: object()),
+        ("continue_audio", lambda: object()),
+    ],
+)
+def test_qualified_capabilities_reject_wrong_request_type(
+    tmp_path: Path,
+    model_factory: Any,
+    upstream_stub: _StubUpstream,
+    operation: str,
+    request_factory: Any,
 ) -> None:
     backend = _backend(tmp_path, model_factory)
     backend.load()
     with pytest.raises(BackendRequestError):
-        backend.design(object())  # type: ignore[arg-type]
+        getattr(backend, operation)(request_factory())
 
 
 # --- synthesis mapping (Phase G) ----------------------------------------
@@ -464,9 +465,11 @@ def test_synthesize_reads_real_sample_rate_from_model(
     assert result.sample_rate_hz == 24_000
     assert result.metadata == (
         ("backend", "pytorch-voxcpm"),
+        ("conditioning", "none"),
         ("model_id", backend.resolved_model.model_id),
         ("model_revision", "unrecorded"),
         ("model_source_kind", "explicit-path"),
+        ("operation", "synthesize"),
         ("sample_rate_hz", 24_000),
         ("sample_rate_source", "model.tts_model.sample_rate"),
         ("upstream_device", "cpu"),
@@ -749,3 +752,457 @@ def test_synthesize_requires_loaded_model_object(
     with pytest.raises(BackendStateError) as caught:
         backend.synthesize(SpeechRequest(text="x"))
     assert caught.value.code == "backend_not_loaded"
+
+
+# --- M6 reference audio policy (Section 5) -----------------------------
+
+
+def _reference_file(tmp_path: Path, name: str = "reference.wav") -> Path:
+    target = tmp_path / name
+    target.write_bytes(b"RIFF0000WAVEfmt ")
+    return target
+
+
+def test_missing_reference_audio_is_a_project_owned_error(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    request = CloneRequest(
+        text="a",
+        reference_audio=AudioReference(
+            local_path=str(tmp_path / "absent" / "private-voice.wav")
+        ),
+    )
+    with pytest.raises(BackendRequestError) as caught:
+        backend.clone(request)
+    assert caught.value.code == "reference_audio_not_found"
+    assert "private-voice.wav" not in caught.value.message
+    assert str(tmp_path) not in str(caught.value.to_dict())
+
+
+def test_reference_audio_directory_is_refused(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    request = CloneRequest(
+        text="a",
+        reference_audio=AudioReference(local_path=str(tmp_path)),
+    )
+    with pytest.raises(BackendRequestError) as caught:
+        backend.clone(request)
+    assert caught.value.code == "reference_audio_not_file"
+    assert str(tmp_path) not in str(caught.value.to_dict())
+
+
+def test_unreadable_reference_audio_is_refused(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses filesystem read permissions")
+    reference = _reference_file(tmp_path)
+    reference.chmod(0o000)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendRequestError) as caught:
+        backend.clone(
+            CloneRequest(
+                text="a", reference_audio=AudioReference(local_path=str(reference))
+            )
+        )
+    assert caught.value.code == "reference_audio_unreadable"
+
+
+def test_continuation_rejects_missing_reference_audio(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendRequestError) as caught:
+        backend.continue_audio(
+            ContinuationRequest(
+                text="a",
+                reference_audio=AudioReference(local_path=str(tmp_path / "absent.wav")),
+                reference_transcript="b",
+            )
+        )
+    assert caught.value.code == "reference_audio_not_found"
+
+
+def test_reference_validation_rejects_non_audio_reference() -> None:
+    with pytest.raises(BackendRequestError) as caught:
+        validate_local_reference_audio("reference.wav")  # type: ignore[arg-type]
+    assert caught.value.code == "invalid_backend_request"
+
+
+def test_reference_validation_returns_resolved_local_path(tmp_path: Path) -> None:
+    reference = _reference_file(tmp_path)
+    assert validate_local_reference_audio(
+        AudioReference(local_path=str(reference))
+    ) == str(reference)
+
+
+# --- M6 design mapping --------------------------------------------------
+
+
+def test_design_maps_instruction_and_text_exactly_once(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.design(
+        VoiceDesignRequest(
+            text="Xin chào từ VoxCPM2.",
+            instruction="giọng nữ ấm áp, bình tĩnh",
+        )
+    )
+    assert upstream_stub.model.calls == [
+        {"text": "(giọng nữ ấm áp, bình tĩnh)Xin chào từ VoxCPM2."}
+    ]
+
+
+def test_design_strips_instruction_whitespace(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.design(VoiceDesignRequest(text="target", instruction="  calm  "))
+    assert upstream_stub.model.calls == [{"text": "(calm)target"}]
+
+
+def test_design_passes_no_reference_or_prompt_audio(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.design(VoiceDesignRequest(text="a", instruction="b"))
+    call = upstream_stub.model.calls[0]
+    assert set(call) == {"text"}
+    assert "reference_wav_path" not in call
+    assert "prompt_wav_path" not in call
+    assert "prompt_text" not in call
+
+
+def test_design_returns_audio_result_with_real_sample_rate(
+    tmp_path: Path, model_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _StubModel(waveform=(0.0, 0.25, -0.75))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    result = backend.design(VoiceDesignRequest(text="a", instruction="b"))
+    assert isinstance(result, AudioResult)
+    assert result.samples == (0.0, 0.25, -0.75)
+    assert result.channels == 1
+    assert result.sample_rate_hz == _REAL_SAMPLE_RATE_HZ
+    assert dict(result.metadata)["operation"] == "design"
+    assert dict(result.metadata)["conditioning"] == "instruction"
+
+
+def test_design_reads_real_sample_rate(
+    tmp_path: Path, model_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _StubModel(tts_model=_StubTtsModel(sample_rate=24_000))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    assert backend.design(
+        VoiceDesignRequest(text="a", instruction="b")
+    ).sample_rate_hz == 24_000
+
+
+def test_design_failure_does_not_expose_instruction(
+    tmp_path: Path, model_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "m6-private-instruction-please-hide"
+    model = _StubModel(generate_error=ValueError(f"{secret} /secret/ref.wav"))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        backend.design(VoiceDesignRequest(text="target", instruction=secret))
+    envelope = str(caught.value.to_dict())
+    assert caught.value.code == "backend_execution_failed"
+    assert caught.value.details["operation"] == "design"
+    assert secret not in envelope
+    assert "/secret/ref.wav" not in envelope
+
+
+def test_design_requires_loaded_backend(
+    tmp_path: Path, model_factory: Any
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    with pytest.raises(BackendStateError) as caught:
+        backend.design(VoiceDesignRequest(text="a", instruction="b"))
+    assert caught.value.code == "backend_not_loaded"
+
+
+# --- M6 clone mapping ---------------------------------------------------
+
+
+def test_clone_maps_local_path_to_reference_wav_path(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.clone(
+        CloneRequest(
+            text="Xin chào, đây là phép thử clone giọng.",
+            reference_audio=AudioReference(local_path=str(reference)),
+        )
+    )
+    assert upstream_stub.model.calls == [
+        {
+            "text": "Xin chào, đây là phép thử clone giọng.",
+            "reference_wav_path": str(reference),
+        }
+    ]
+
+
+def test_clone_passes_no_prompt_audio_or_text(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.clone(
+        CloneRequest(
+            text="a", reference_audio=AudioReference(local_path=str(reference))
+        )
+    )
+    call = upstream_stub.model.calls[0]
+    assert set(call) == {"text", "reference_wav_path"}
+    assert "prompt_wav_path" not in call
+    assert "prompt_text" not in call
+
+
+def test_clone_returns_audio_result(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    result = backend.clone(
+        CloneRequest(
+            text="a", reference_audio=AudioReference(local_path=str(reference))
+        )
+    )
+    assert isinstance(result, AudioResult)
+    assert result.sample_rate_hz == _REAL_SAMPLE_RATE_HZ
+    assert dict(result.metadata)["operation"] == "clone"
+    assert dict(result.metadata)["conditioning"] == "reference"
+
+
+def test_clone_never_leaks_local_path_on_failure(
+    tmp_path: Path, model_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _reference_file(tmp_path)
+    model = _StubModel(
+        generate_error=RuntimeError(f"could not decode {reference} at /secret/place")
+    )
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        backend.clone(
+            CloneRequest(
+                text="a",
+                reference_audio=AudioReference(local_path=str(reference)),
+            )
+        )
+    envelope = str(caught.value.to_dict())
+    assert caught.value.details["operation"] == "clone"
+    assert str(reference) not in envelope
+    assert "reference.wav" not in envelope
+    assert str(tmp_path) not in envelope
+    assert "/secret/place" not in envelope
+
+
+def test_clone_requires_loaded_backend(
+    tmp_path: Path, model_factory: Any
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    with pytest.raises(BackendStateError) as caught:
+        backend.clone(
+            CloneRequest(
+                text="a", reference_audio=AudioReference(local_path="reference.wav")
+            )
+        )
+    assert caught.value.code == "backend_not_loaded"
+
+
+# --- M6 continuation mapping --------------------------------------------
+
+
+def test_continue_audio_maps_local_path_to_prompt_wav_path(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.continue_audio(
+        ContinuationRequest(
+            text="Và đây là phần tiếp theo.",
+            reference_audio=AudioReference(local_path=str(reference)),
+            reference_transcript="Xin chào, đây là giọng nói tham chiếu.",
+        )
+    )
+    assert upstream_stub.model.calls == [
+        {
+            "text": "Và đây là phần tiếp theo.",
+            "prompt_text": "Xin chào, đây là giọng nói tham chiếu.",
+            "prompt_wav_path": str(reference),
+        }
+    ]
+
+
+def test_continue_audio_passes_no_reference_wav_path(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    backend.continue_audio(
+        ContinuationRequest(
+            text="a",
+            reference_audio=AudioReference(local_path=str(reference)),
+            reference_transcript="b",
+        )
+    )
+    call = upstream_stub.model.calls[0]
+    assert set(call) == {"text", "prompt_text", "prompt_wav_path"}
+    assert "reference_wav_path" not in call
+
+
+def test_continue_audio_returns_audio_result(
+    tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
+) -> None:
+    reference = _reference_file(tmp_path)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    result = backend.continue_audio(
+        ContinuationRequest(
+            text="a",
+            reference_audio=AudioReference(local_path=str(reference)),
+            reference_transcript="b",
+        )
+    )
+    assert isinstance(result, AudioResult)
+    assert dict(result.metadata)["operation"] == "continue_audio"
+    assert dict(result.metadata)["conditioning"] == "continuation"
+
+
+def test_continuation_does_not_leak_path_or_transcript_on_failure(
+    tmp_path: Path, model_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _reference_file(tmp_path)
+    transcript = "m6-private-reference-transcript"
+    model = _StubModel(generate_error=ValueError(f"{transcript} {reference}"))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        backend.continue_audio(
+            ContinuationRequest(
+                text="target",
+                reference_audio=AudioReference(local_path=str(reference)),
+                reference_transcript=transcript,
+            )
+        )
+    envelope = str(caught.value.to_dict())
+    assert caught.value.details["operation"] == "continue_audio"
+    assert transcript not in envelope
+    assert str(reference) not in envelope
+    assert str(tmp_path) not in envelope
+
+
+def test_continue_audio_requires_loaded_backend(
+    tmp_path: Path, model_factory: Any
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    with pytest.raises(BackendStateError) as caught:
+        backend.continue_audio(
+            ContinuationRequest(
+                text="a",
+                reference_audio=AudioReference(local_path="reference.wav"),
+                reference_transcript="b",
+            )
+        )
+    assert caught.value.code == "backend_not_loaded"
+
+
+# --- M6 design text rule ------------------------------------------------
+
+
+def test_build_design_text_matches_pinned_upstream_rule() -> None:
+    assert build_design_text("target", "calm") == "(calm)target"
+    assert build_design_text("target", "  calm  ") == "(calm)target"
+    assert build_design_text("target", "") == "target"
+    assert build_design_text("target", "   ") == "target"
+
+
+def test_build_design_text_rejects_non_strings() -> None:
+    with pytest.raises(TypeError):
+        build_design_text(object(), "calm")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["synthesize", "design", "clone", "continue_audio"],
+)
+def test_waveform_conversion_failure_preserves_operation(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    class _ExplodingWaveform:
+        ndim = 1
+
+        def tolist(self) -> list[float]:
+            raise RuntimeError("private waveform conversion detail")
+
+    upstream = _StubUpstream(model=_StubModel(waveform=_ExplodingWaveform()))
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    reference = _reference_file(tmp_path)
+
+    requests = {
+        "synthesize": SpeechRequest(text="a"),
+        "design": VoiceDesignRequest(text="a", instruction="b"),
+        "clone": CloneRequest(
+            text="a",
+            reference_audio=AudioReference(local_path=str(reference)),
+        ),
+        "continue_audio": ContinuationRequest(
+            text="a",
+            reference_audio=AudioReference(local_path=str(reference)),
+            reference_transcript="b",
+        ),
+    }
+
+    with pytest.raises(BackendExecutionError) as caught:
+        getattr(backend, operation)(requests[operation])
+    assert caught.value.code == "backend_execution_failed"
+    assert caught.value.details["operation"] == operation
+    assert "private waveform conversion detail" not in str(caught.value.to_dict())
