@@ -47,12 +47,20 @@ def _create_fake_backend(spec: WorkerBootstrapSpec) -> InferenceBackend:
     )
 
 
+def child_cuda_environment(spec: WorkerBootstrapSpec) -> dict[str, str]:
+    """Return child-local CUDA overrides without importing the CUDA stack."""
+    if spec.physical_gpu_index is None:
+        return {}
+    return {
+        "CUDA_VISIBLE_DEVICES": str(spec.physical_gpu_index),
+        "VOXCPM_DEVICE": "cuda",
+        "VOXCPM_GPU_DEVICES": "0",
+        "VOXCPM_WORKERS": "1",
+    }
+
+
 def _create_real_backend(spec: WorkerBootstrapSpec) -> InferenceBackend:
-    if spec.physical_gpu_index is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(spec.physical_gpu_index)
-        os.environ["VOXCPM_DEVICE"] = "cuda"
-        os.environ["VOXCPM_GPU_DEVICES"] = "0"
-        os.environ["VOXCPM_WORKERS"] = "1"
+    os.environ.update(child_cuda_environment(spec))
 
     from voxcpm_runtime.config import RuntimeConfig
     from voxcpm_runtime.device import DeviceManager
@@ -229,4 +237,4 @@ def worker_process_main(
             pass
 
 
-__all__: Final[tuple[str, ...]] = ("worker_process_main",)
+__all__: Final[tuple[str, ...]] = ("child_cuda_environment", "worker_process_main")

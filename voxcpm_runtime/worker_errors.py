@@ -67,7 +67,13 @@ class WorkerCancelledError(WorkerError):
     default_message = "Worker request was cancelled."
 
 
+class SchedulerAdmissionError(WorkerError):
+    default_code = "scheduler_admission_failed"
+    default_message = "Scheduler admission failed."
+
+
 __all__: Final[tuple[str, ...]] = (
+    "SchedulerAdmissionError",
     "WorkerCancelledError",
     "WorkerError",
     "WorkerExitedError",

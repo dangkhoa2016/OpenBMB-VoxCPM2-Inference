@@ -14,6 +14,7 @@ from voxcpm_runtime.backend_types import (
 )
 from voxcpm_runtime.worker_client import WorkerClient, WorkerState
 from voxcpm_runtime.worker_errors import WorkerError, WorkerExitedError, WorkerStartError
+from voxcpm_runtime.worker_process import child_cuda_environment
 from voxcpm_runtime.worker_types import WorkerBootstrapSpec, WorkerRequest
 
 
@@ -153,3 +154,17 @@ def test_worker_client_rejects_non_spawn_context():
             WorkerBootstrapSpec(worker_id="worker0"),
             context=mp.get_context(non_spawn),
         )
+
+
+def test_child_cuda_environment_remaps_physical_gpu_to_runtime_zero():
+    spec = WorkerBootstrapSpec(
+        worker_id="worker0",
+        backend_kind="real",
+        physical_gpu_index=3,
+    )
+    assert child_cuda_environment(spec) == {
+        "CUDA_VISIBLE_DEVICES": "3",
+        "VOXCPM_DEVICE": "cuda",
+        "VOXCPM_GPU_DEVICES": "0",
+        "VOXCPM_WORKERS": "1",
+    }
