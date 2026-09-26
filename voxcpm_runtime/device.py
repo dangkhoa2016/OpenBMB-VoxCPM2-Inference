@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config import DeviceMode, RuntimeConfig, parse_gpu_devices, parse_workers
+from .profiles import materialize_execution_profile
 
 
 class DeviceResolutionError(ValueError):
@@ -566,7 +567,16 @@ def resolve_execution_plan(config: RuntimeConfig, inventory: HardwareInventory) 
         raise TypeError("config must be a RuntimeConfig")
     if not isinstance(inventory, HardwareInventory):
         raise TypeError("inventory must be a HardwareInventory")
-    return _resolve_values(config.device, config.gpu_devices, config.workers, inventory)
+    normalized = materialize_execution_profile(
+        config,
+        gpu_probe=lambda: _visible_gpu_indices(inventory),
+    )
+    return _resolve_values(
+        normalized.device,
+        normalized.gpu_devices,
+        normalized.workers,
+        inventory,
+    )
 
 
 def resolve(

@@ -60,6 +60,8 @@ def child_cuda_environment(spec: WorkerBootstrapSpec) -> dict[str, str]:
 
 
 def _create_real_backend(spec: WorkerBootstrapSpec) -> InferenceBackend:
+    if spec.physical_gpu_index is not None:
+        os.environ.pop("VOXCPM_PROFILE", None)
     os.environ.update(child_cuda_environment(spec))
 
     from voxcpm_runtime.config import RuntimeConfig

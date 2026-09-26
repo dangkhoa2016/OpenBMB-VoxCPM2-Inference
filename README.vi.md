@@ -68,7 +68,7 @@ voxcpm-generate --stream --text "Xin chào từ VoxCPM2." \
   --output streamed.wav --report streamed-report.json
 ```
 
-M7 qualification model/backend streaming; M8 bổ sung process/IPC boundary nội bộ; M9 bổ sung HTTP surface; M10 qualification hai real GPU worker độc lập dưới cùng API parent. Cài API extra bằng `python -m pip install -e '.[api]'`, cấu hình GPU tường minh, auth và bounded queue, rồi chạy `voxcpm-serve`. Với T4x2 đã qualification, dùng `VOXCPM_DEVICE=cuda`, `VOXCPM_GPU_DEVICES=0,1` và `VOXCPM_WORKERS=2`. Các endpoint đã qualification là `GET /healthz`, `GET /readyz`, `POST /v1/tts` và `POST /v1/tts/stream`. Stream trả raw `pcm_s16le` qua `application/octet-stream`, không phải SSE hay WebSocket.
+M7 qualification model/backend streaming; M8 bổ sung process/IPC boundary nội bộ; M9 bổ sung HTTP surface; M10 qualification hai real GPU worker độc lập dưới cùng API parent. Các tên execution profile được freeze là `cpu`, `cuda-single`, `cuda-replica` và `auto`; `gpu` và `multi-gpu` được chấp nhận làm alias. Cài API extra bằng `python -m pip install -e '.[api]'`, cấu hình auth và bounded queue, rồi chạy `voxcpm-serve`. Các endpoint đã qualification là `GET /healthz`, `GET /readyz`, `POST /v1/tts` và `POST /v1/tts/stream`. Stream trả raw `pcm_s16le` qua `application/octet-stream`, không phải SSE hay WebSocket. Xem [`docs/EXECUTION-PROFILES.vi.md`](docs/EXECUTION-PROFILES.vi.md) cho semantics của profile.
 
 CI thông thường M0 đến M10 vẫn GPU-free và model-free. M0 từ chối tracked `.bin` cùng các định dạng model-weight. Xem [`docs/API-RUNTIME.vi.md`](docs/API-RUNTIME.vi.md) cho HTTP contract và [`docs/T4X2-TWO-WORKER-RUNTIME.vi.md`](docs/T4X2-TWO-WORKER-RUNTIME.vi.md) cho ranh giới M10 T4x2 đã đo.
 

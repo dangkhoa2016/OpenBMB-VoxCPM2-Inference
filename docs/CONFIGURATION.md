@@ -17,13 +17,16 @@ M1 provides a side-effect-free configuration loader, a host inventory, determini
 | `VOXCPM_OPTIMIZE` | `auto` | Validated enum |
 | `VOXCPM_UPSTREAM_REVISION` | unset | Informational provenance value |
 
-### Device and workers
+### Device, workers, and execution profiles
 
-| Variable | Default | M1 behavior |
+| Variable | Default | Behavior |
 | --- | --- | --- |
+| `VOXCPM_PROFILE` | unset | Optional canonical profile: `cpu`, `cuda-single`, `cuda-replica`, or `auto`; aliases `gpu` and `multi-gpu` normalize to canonical names |
 | `VOXCPM_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` |
 | `VOXCPM_GPU_DEVICES` | `auto` | `auto` or comma-separated non-negative indices |
 | `VOXCPM_WORKERS` | `auto` | `auto` or a positive integer |
+
+`VOXCPM_PROFILE` is optional. When unset, the existing low-level device/GPU/worker contract is unchanged. When set, the profile materializes a compatible low-level topology and rejects conflicting settings instead of silently overriding them. See `docs/EXECUTION-PROFILES.md`.
 
 GPU indices use PyTorch's runtime-visible namespace. Explicit order is preserved, for example `1,0`. Duplicate, negative, malformed, and out-of-range indices are rejected.
 
