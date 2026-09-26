@@ -311,7 +311,7 @@ def test_dispatch_rejects_unknown_request() -> None:
 # --- CLI surface --------------------------------------------------------
 
 
-def test_help_lists_every_m6_flag() -> None:
+def test_help_lists_every_m7_flag() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "scripts.generate", "--help"],
         capture_output=True,
@@ -328,7 +328,19 @@ def test_help_lists_every_m6_flag() -> None:
         "--reference-audio",
         "--prompt-audio",
         "--prompt-text",
+        "--stream",
     ):
         assert flag in completed.stdout, flag
-    for absent in ("--stream", "--chunk", "--queue"):
+    for absent in ("--chunk", "--queue", "--http", "--websocket"):
         assert absent not in completed.stdout, absent
+
+
+def test_stream_cannot_combine_with_load_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(["--stream", "--load-only"])
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "invalid_request"
+    assert "--stream" in payload["error"]["message"]

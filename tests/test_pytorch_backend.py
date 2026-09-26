@@ -11,6 +11,7 @@ import pytest
 
 from voxcpm_runtime.backend import InferenceBackend
 from voxcpm_runtime.backend_types import (
+    AudioChunk,
     AudioReference,
     AudioResult,
     CloneRequest,
@@ -61,23 +62,76 @@ class _StubTtsModel:
         return [("cache", _StubTensor(self._buffer_device))]
 
 
+class _StubStream:
+    def __init__(
+        self,
+        chunks: tuple[Any, ...],
+        *,
+        error_at: int | None = None,
+        close_error: BaseException | None = None,
+    ) -> None:
+        self._chunks = chunks
+        self._error_at = error_at
+        self._close_error = close_error
+        self._index = 0
+        self.closed = False
+        self.next_calls = 0
+
+    def __iter__(self) -> "_StubStream":
+        return self
+
+    def __next__(self) -> Any:
+        self.next_calls += 1
+        if self._error_at is not None and self._index == self._error_at:
+            raise RuntimeError("private-stream-error")
+        if self._index >= len(self._chunks):
+            raise StopIteration
+        value = self._chunks[self._index]
+        self._index += 1
+        return value
+
+    def close(self) -> None:
+        self.closed = True
+        if self._close_error is not None:
+            raise self._close_error
+
+
 class _StubModel:
     def __init__(
         self,
         waveform: Any = (0.0, 0.5, -0.5, 1.0, -1.0),
         tts_model: Any = None,
         generate_error: BaseException | None = None,
+        *,
+        stream_chunks: tuple[Any, ...] = ((0.0, 0.1), (0.2, 0.3), (0.4,)),
+        stream_error_at: int | None = None,
+        stream_close_error: BaseException | None = None,
     ) -> None:
         self.tts_model = _StubTtsModel() if tts_model is None else tts_model
         self.waveform = waveform
         self.generate_error = generate_error
         self.calls: list[dict[str, Any]] = []
+        self.stream_calls: list[dict[str, Any]] = []
+        self.streams: list[_StubStream] = []
+        self.stream_chunks = stream_chunks
+        self.stream_error_at = stream_error_at
+        self.stream_close_error = stream_close_error
 
     def generate(self, **kwargs: Any) -> Any:
         self.calls.append(dict(kwargs))
         if self.generate_error is not None:
             raise self.generate_error
         return self.waveform
+
+    def generate_streaming(self, **kwargs: Any) -> _StubStream:
+        self.stream_calls.append(dict(kwargs))
+        stream = _StubStream(
+            self.stream_chunks,
+            error_at=self.stream_error_at,
+            close_error=self.stream_close_error,
+        )
+        self.streams.append(stream)
+        return stream
 
 
 class _StubUpstream:
@@ -377,7 +431,7 @@ def test_reopen_after_close_is_rejected(
 # --- BackendInfo / capabilities (F5) ------------------------------------
 
 
-def test_backend_info_advertises_qualified_one_shot_operations(
+def test_backend_info_advertises_qualified_operations(
     tmp_path: Path, model_factory: Any, upstream_stub: _StubUpstream
 ) -> None:
     info = _backend(tmp_path, model_factory).load()
@@ -385,35 +439,13 @@ def test_backend_info_advertises_qualified_one_shot_operations(
         "clone",
         "continue_audio",
         "design",
+        "stream",
         "synthesize",
     )
     assert info.capabilities == REAL_BACKEND_CAPABILITIES
-    assert "stream" not in info.capabilities
     assert info.loaded is True
     assert info.device == "cpu"
     assert info.backend == "pytorch-voxcpm"
-
-
-@pytest.mark.parametrize(
-    ("operation", "request_factory", "code"),
-    [
-        ("stream", lambda: StreamRequest(SpeechRequest(text="a")), "stream_not_qualified"),
-    ],
-)
-def test_unqualified_capabilities_raise(
-    tmp_path: Path,
-    model_factory: Any,
-    upstream_stub: _StubUpstream,
-    operation: str,
-    request_factory: Any,
-    code: str,
-) -> None:
-    backend = _backend(tmp_path, model_factory)
-    backend.load()
-    with pytest.raises(BackendUnsupportedError) as caught:
-        getattr(backend, operation)(request_factory())
-    assert caught.value.code == code
-    assert caught.value.details["milestone"] == "M7"
 
 
 @pytest.mark.parametrize(
@@ -1206,3 +1238,340 @@ def test_waveform_conversion_failure_preserves_operation(
     assert caught.value.code == "backend_execution_failed"
     assert caught.value.details["operation"] == operation
     assert "private waveform conversion detail" not in str(caught.value.to_dict())
+
+
+# --- native streaming (M7) ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stream_request", "expected_kwargs"),
+    [
+        (
+            SpeechRequest(text="stream speech"),
+            {"text": "stream speech"},
+        ),
+        (
+            VoiceDesignRequest(text="stream design", instruction="calm"),
+            {"text": "(calm)stream design"},
+        ),
+    ],
+)
+def test_stream_maps_unconditioned_and_design_requests_to_native_upstream(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    stream_request: Any,
+    expected_kwargs: dict[str, Any],
+) -> None:
+    model = _StubModel()
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    iterator = backend.stream(StreamRequest(stream_request))
+    assert model.stream_calls == []
+    first = next(iterator)
+    assert isinstance(first, AudioChunk)
+    assert model.calls == []
+    assert model.stream_calls == [expected_kwargs]
+    iterator.close()
+
+
+def test_stream_maps_clone_request_to_reference_wav_path(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    reference = _reference_file(tmp_path)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    list(
+        backend.stream(
+            StreamRequest(
+                CloneRequest(
+                    text="clone stream",
+                    reference_audio=AudioReference(local_path=str(reference)),
+                )
+            )
+        )
+    )
+    assert model.stream_calls == [
+        {
+            "text": "clone stream",
+            "reference_wav_path": str(reference),
+        }
+    ]
+    assert model.calls == []
+
+
+def test_stream_maps_continuation_request_to_prompt_pair(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+    reference = _reference_file(tmp_path)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    list(
+        backend.stream(
+            StreamRequest(
+                ContinuationRequest(
+                    text="continuation stream",
+                    reference_audio=AudioReference(local_path=str(reference)),
+                    reference_transcript="prefix transcript",
+                )
+            )
+        )
+    )
+    assert model.stream_calls == [
+        {
+            "text": "continuation stream",
+            "prompt_text": "prefix transcript",
+            "prompt_wav_path": str(reference),
+        }
+    ]
+    assert model.calls == []
+
+
+def test_stream_chunks_are_contiguous_non_empty_and_have_one_final_chunk(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(
+        stream_chunks=((0.0, 0.1), (0.2,), (0.3, 0.4, 0.5)),
+        tts_model=_StubTtsModel(sample_rate=24_000),
+    )
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    chunks = list(backend.stream(StreamRequest(SpeechRequest(text="chunks"))))
+
+    assert [chunk.sequence for chunk in chunks] == [0, 1, 2]
+    assert [chunk.is_final for chunk in chunks] == [False, False, True]
+    assert all(chunk.samples for chunk in chunks)
+    assert all(chunk.sample_rate_hz == 24_000 for chunk in chunks)
+    assert all(chunk.channels == 1 for chunk in chunks)
+    assert tuple(sample for chunk in chunks for sample in chunk.samples) == (
+        0.0,
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+    )
+    assert all(("operation", "stream") in chunk.metadata for chunk in chunks)
+    assert model.streams[0].closed is True
+
+
+def test_stream_uses_one_chunk_lookahead_lazily(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(stream_chunks=((0.0,), (0.1,), (0.2,)))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    iterator = backend.stream(StreamRequest(SpeechRequest(text="lazy")))
+
+    assert model.stream_calls == []
+    first = next(iterator)
+    stream = model.streams[0]
+    assert first.sequence == 0
+    assert first.is_final is False
+    assert stream.next_calls == 2
+    iterator.close()
+    assert stream.closed is True
+
+
+def test_stream_empty_upstream_is_project_error(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(stream_chunks=())
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        next(backend.stream(StreamRequest(SpeechRequest(text="empty"))))
+    assert caught.value.code == "empty_stream"
+    assert caught.value.details["operation"] == "stream"
+    assert model.streams[0].closed is True
+
+
+def test_stream_failure_before_first_chunk_is_normalized(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(stream_error_at=0)
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        next(backend.stream(StreamRequest(SpeechRequest(text="failure"))))
+    assert caught.value.code == "backend_execution_failed"
+    assert caught.value.details["operation"] == "stream"
+    assert "private-stream-error" not in str(caught.value.to_dict())
+    assert model.streams[0].closed is True
+
+
+def test_stream_failure_after_emitted_chunk_is_normalized(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(
+        stream_chunks=((0.0,), (0.1,), (0.2,)),
+        stream_error_at=2,
+    )
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    iterator = backend.stream(StreamRequest(SpeechRequest(text="partial")))
+    first = next(iterator)
+    assert first.sequence == 0
+    assert first.is_final is False
+
+    with pytest.raises(BackendExecutionError) as caught:
+        next(iterator)
+    assert caught.value.details["operation"] == "stream"
+    assert "private-stream-error" not in str(caught.value.to_dict())
+    assert model.streams[0].closed is True
+
+
+def test_stream_waveform_conversion_failure_preserves_stream_operation(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ExplodingWaveform:
+        ndim = 1
+
+        def tolist(self) -> list[float]:
+            raise RuntimeError("private-stream-waveform-detail")
+
+    model = _StubModel(
+        stream_chunks=(_ExplodingWaveform(), (0.1,)),
+    )
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        next(backend.stream(StreamRequest(SpeechRequest(text="convert"))))
+    assert caught.value.details["operation"] == "stream"
+    assert "private-stream-waveform-detail" not in str(caught.value.to_dict())
+
+
+def test_stream_early_close_closes_upstream_and_backend_remains_reusable(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(stream_chunks=((0.0,), (0.1,), (0.2,)))
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    iterator = backend.stream(StreamRequest(SpeechRequest(text="cancel")))
+    assert next(iterator).sequence == 0
+    iterator.close()
+    assert model.streams[0].closed is True
+
+    result = backend.synthesize(SpeechRequest(text="after cancel"))
+    assert result.samples
+    assert model.calls == [{"text": "after cancel"}]
+
+
+def test_stream_close_failure_is_normalized(
+    tmp_path: Path,
+    model_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel(
+        stream_chunks=((0.0,),),
+        stream_close_error=RuntimeError("private-close-detail"),
+    )
+    upstream = _StubUpstream(model=model)
+    module = types.ModuleType(_UPSTREAM_MODULE)
+    module.VoxCPM = upstream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _UPSTREAM_MODULE, module)
+
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendExecutionError) as caught:
+        list(backend.stream(StreamRequest(SpeechRequest(text="close failure"))))
+    assert caught.value.details["operation"] == "stream"
+    assert "private-close-detail" not in str(caught.value.to_dict())
+
+
+def test_stream_rejects_wrong_request_type_eagerly(
+    tmp_path: Path,
+    model_factory: Any,
+    upstream_stub: _StubUpstream,
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    backend.load()
+    with pytest.raises(BackendRequestError):
+        backend.stream(object())  # type: ignore[arg-type]
+
+
+def test_stream_lifecycle_is_enforced_eagerly(
+    tmp_path: Path,
+    model_factory: Any,
+    upstream_stub: _StubUpstream,
+) -> None:
+    backend = _backend(tmp_path, model_factory)
+    with pytest.raises(BackendStateError) as before:
+        backend.stream(StreamRequest(SpeechRequest(text="before load")))
+    assert before.value.code == "backend_not_loaded"
+
+    backend.load()
+    backend.close()
+    with pytest.raises(BackendStateError) as after:
+        backend.stream(StreamRequest(SpeechRequest(text="after close")))
+    assert after.value.code == "backend_closed"

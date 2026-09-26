@@ -530,31 +530,51 @@ jobs:
                   raise AssertionError(f"{operation} failure was not normalized")
           print("M6_REFERENCE_PATH_REDACTION_GATE=PASS")
 
-          # Capabilities advertise one-shot features and still omit streaming.
+          # M7 advertises native stream alongside the qualified one-shot features.
           assert REAL_BACKEND_CAPABILITIES == (
               "clone",
               "continue_audio",
               "design",
+              "stream",
               "synthesize",
           )
           info = backend.load()
           assert info.capabilities == REAL_BACKEND_CAPABILITIES
-          assert "stream" not in info.capabilities
-          print("M6_REAL_BACKEND_CAPABILITY_GATE=PASS")
+          print("M7_REAL_BACKEND_STREAM_CAPABILITY_GATE=PASS")
 
-          try:
-              backend.stream(StreamRequest(SpeechRequest(text="a")))
-          except BackendUnsupportedError as error:
-              assert error.code == "stream_not_qualified"
-              assert error.details["milestone"] == "M7"
-          else:
-              raise AssertionError("streaming stayed qualified")
-          source = Path("voxcpm_runtime/pytorch_backend.py").read_text(encoding="utf-8")
-          assert "generate_streaming" not in source
-          assert "StreamRequest(request)" not in source
-          print("M6_STREAMING_REMAINS_UNQUALIFIED_GATE=PASS")
+          class NativeStreamModel:
+              def __init__(self):
+                  self.stream_calls = []
+                  self.tts_model = SimpleNamespace(sample_rate=48000)
 
-          # The CLI must reject every unqualified flag combination offline.
+              def generate(self, **kwargs):
+                  raise AssertionError("stream path buffered through generate")
+
+              def generate_streaming(self, **kwargs):
+                  self.stream_calls.append(dict(kwargs))
+                  return iter(((0.0, 0.1), (0.2, 0.3), (0.4,)))
+
+          native = NativeStreamModel()
+          backend._model = native
+          iterator = backend.stream(StreamRequest(SpeechRequest(text="a")))
+          assert native.stream_calls == []
+          first = next(iterator)
+          assert native.stream_calls == [{"text": "a"}]
+          remaining = list(iterator)
+          chunks = [first, *remaining]
+          assert [chunk.sequence for chunk in chunks] == [0, 1, 2]
+          assert [chunk.is_final for chunk in chunks] == [False, False, True]
+          assert all(chunk.samples for chunk in chunks)
+          assert tuple(
+              sample for chunk in chunks for sample in chunk.samples
+          ) == (0.0, 0.1, 0.2, 0.3, 0.4)
+          print("M7_NATIVE_STREAM_MAPPING_GATE=PASS")
+          print("M7_NATIVE_NOT_BUFFERED_GATE=PASS")
+          print("M7_STREAM_SEQUENCE_GATE=PASS")
+          print("M7_FINAL_CHUNK_SEMANTICS_GATE=PASS")
+          print("M7_LAZY_STREAM_ITERATION_GATE=PASS")
+
+          # The CLI must reject every invalid flag combination offline.
           for arguments in (
               ["--text", "a", "--voice-instruction", "b", "--reference-audio", str(reference)],
               ["--text", "a", "--reference-audio", str(reference), "--prompt-text", "b"],
@@ -570,8 +590,24 @@ jobs:
               payload = json.loads(completed.stdout)
               assert payload["error"]["code"] == "invalid_request"
               assert str(workspace) not in completed.stdout
-          for forbidden in ("--stream", "--chunk", "--queue", "--denoise"):
-              assert forbidden not in completed.stdout
+          help_completed = subprocess.run(
+              [sys.executable, "-m", "scripts.generate", "--help"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          assert help_completed.returncode == 0
+          assert "--stream" in help_completed.stdout
+          for forbidden in (
+              "--chunk",
+              "--queue",
+              "--denoise",
+              "--http",
+              "--websocket",
+              "--sse",
+          ):
+              assert forbidden not in help_completed.stdout
+          print("M7_HTTP_REMAINS_OUT_OF_SCOPE_GATE=PASS")
 
           # No runtime module may acquire audio or reach the network.
           for path in sorted(Path("voxcpm_runtime").glob("*.py")):

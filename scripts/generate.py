@@ -3,16 +3,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
 from voxcpm_runtime.backend_types import (
     AudioReference,
+    AudioResult,
     BackendInfo,
     CloneRequest,
     ContinuationRequest,
     OneShotRequest,
     SpeechRequest,
+    StreamRequest,
     VoiceDesignRequest,
 )
 from voxcpm_runtime.config import ConfigurationError, OptimizationMode, RuntimeConfig
@@ -125,6 +128,14 @@ def _parser() -> argparse.ArgumentParser:
         "--prompt-text",
         default=None,
         help="Transcript of --prompt-audio for the audio-continuation operation.",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Use the qualified native upstream streaming path, collect project "
+            "AudioChunk metrics, then write one validation WAV after completion."
+        ),
     )
     parser.add_argument(
         "--load-only",
@@ -311,12 +322,19 @@ def main(arguments: Sequence[str] | None = None) -> int:
     namespace = _parser().parse_args(arguments)
     text: str | None = namespace.text
     load_only: bool = bool(namespace.load_only)
+    stream_mode: bool = bool(namespace.stream)
     report_path: str | None = namespace.report
 
     if not load_only and (not isinstance(text, str) or not text.strip()):
         return _emit_error(
             "invalid_request",
             "--text must be a non-empty string unless --load-only is used.",
+            "ArgumentError",
+        )
+    if load_only and stream_mode:
+        return _emit_error(
+            "invalid_request",
+            "--stream cannot be combined with --load-only.",
             "ArgumentError",
         )
     if not load_only and not isinstance(namespace.output, str):
@@ -337,6 +355,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 problem or "The requested operation combination is not supported.",
                 "ArgumentError",
             )
+        if stream_mode:
+            operation = f"stream-{operation}"
 
     try:
         config = RuntimeConfig.from_env()
@@ -402,7 +422,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     report: dict[str, Any] = {
         "schema_version": 1,
         "status": "ok",
-        "project": {"name": "openbmb-voxcpm2-inference", "milestone": "M6"},
+        "project": {
+            "name": "openbmb-voxcpm2-inference",
+            "milestone": "M7" if stream_mode else "M6",
+        },
         "operation": operation,
         "request": _request_summary(request, text, namespace.voice_instruction) if request else {},
         "config": {
@@ -431,6 +454,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "audio": None,
         "wav": None,
         "wav_validation": None,
+        "stream": None,
         "notes": [
             "Absolute filesystem paths are withheld from this public report.",
             "Model weights are never committed to this repository.",
@@ -480,7 +504,47 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     generate_timer = Stopwatch(operation)
     try:
-        result = _dispatch_one_shot(backend, request)
+        if stream_mode:
+            stream_started = time.perf_counter()
+            chunks = []
+            arrival_seconds: list[float] = []
+            for chunk in backend.stream(StreamRequest(request)):
+                chunks.append(chunk)
+                arrival_seconds.append(time.perf_counter() - stream_started)
+            if not chunks:
+                raise BackendRequestError(
+                    "The stream produced no audio chunks.",
+                    code="empty_stream",
+                )
+            samples = tuple(
+                sample for chunk in chunks for sample in chunk.samples
+            )
+            result = AudioResult(
+                samples=samples,
+                sample_rate_hz=chunks[0].sample_rate_hz,
+                channels=chunks[0].channels,
+                metadata=chunks[0].metadata,
+            )
+            chunk_sizes = [len(chunk.samples) for chunk in chunks]
+            report["stream"] = {
+                "all_chunks_non_empty": all(size > 0 for size in chunk_sizes),
+                "audio_duration_seconds": round(
+                    len(samples) / result.sample_rate_hz, 6
+                ),
+                "chunk_count": len(chunks),
+                "final_chunk_count": sum(chunk.is_final for chunk in chunks),
+                "first_chunk_latency_seconds": round(arrival_seconds[0], 6),
+                "first_chunk_samples": chunk_sizes[0],
+                "max_chunk_samples": max(chunk_sizes),
+                "min_chunk_samples": min(chunk_sizes),
+                "native": True,
+                "sequence_contiguous": [chunk.sequence for chunk in chunks]
+                == list(range(len(chunks))),
+                "stream_completion_seconds": round(arrival_seconds[-1], 6),
+                "total_sample_count": len(samples),
+            }
+        else:
+            result = _dispatch_one_shot(backend, request)
     except BackendError as error:
         generate_timer.stop()
         backend.close()

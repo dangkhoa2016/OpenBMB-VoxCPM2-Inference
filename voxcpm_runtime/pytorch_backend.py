@@ -38,6 +38,7 @@ REAL_BACKEND_CAPABILITIES: Final[tuple[str, ...]] = (
     "clone",
     "continue_audio",
     "design",
+    "stream",
     "synthesize",
 )
 _UPSTREAM_MODULE: Final = "voxcpm"
@@ -495,12 +496,14 @@ class PytorchVoxCPMBackend:
         return self._call_normalized("continue_audio", lambda: self._continue_audio(request))
 
     def stream(self, request: StreamRequest) -> Iterator[AudioChunk]:
-        self._reject("stream", request, (StreamRequest,))
-        raise BackendUnsupportedError(
-            "Streaming is not qualified by this backend yet.",
-            code="stream_not_qualified",
-            details={"capability": "stream", "milestone": "M7"},
-        )
+        self._ensure_ready()
+        if not isinstance(request, StreamRequest):
+            raise BackendRequestError(
+                "Backend request is invalid.",
+                details={"field": "request"},
+            )
+        conditioning, generate_kwargs = self._stream_generate_kwargs(request.request)
+        return self._stream_chunks(conditioning, generate_kwargs)
 
     def close(self) -> None:
         if self._state is _State.CLOSED:
@@ -621,6 +624,111 @@ class PytorchVoxCPMBackend:
                 "prompt_wav_path": reference_path,
             },
         )
+
+    def _stream_generate_kwargs(
+        self,
+        request: SpeechRequest | VoiceDesignRequest | CloneRequest | ContinuationRequest,
+    ) -> tuple[str, dict[str, Any]]:
+        if isinstance(request, SpeechRequest):
+            return _CONDITIONING_NONE, {"text": request.text}
+        if isinstance(request, VoiceDesignRequest):
+            return _CONDITIONING_INSTRUCTION, {
+                "text": build_design_text(request.text, request.instruction)
+            }
+        if isinstance(request, CloneRequest):
+            reference_path = validate_local_reference_audio(request.reference_audio)
+            return _CONDITIONING_REFERENCE, {
+                "text": request.text,
+                "reference_wav_path": reference_path,
+            }
+        if isinstance(request, ContinuationRequest):
+            reference_path = validate_local_reference_audio(request.reference_audio)
+            return _CONDITIONING_CONTINUATION, {
+                "text": request.text,
+                "prompt_text": request.reference_transcript,
+                "prompt_wav_path": reference_path,
+            }
+        raise BackendRequestError(
+            "Backend request is invalid.",
+            details={"field": "request"},
+        )
+
+    def _stream_chunks(
+        self,
+        conditioning: str,
+        generate_kwargs: dict[str, Any],
+    ) -> Iterator[AudioChunk]:
+        """Adapt pinned upstream native chunks with one-chunk final lookahead."""
+
+        model = self._require_model()
+        sample_rate_hz = _read_sample_rate_hz(model)
+        metadata = self._result_metadata(
+            sample_rate_hz,
+            operation="stream",
+            conditioning=conditioning,
+        )
+        try:
+            upstream_stream = model.generate_streaming(**generate_kwargs)
+            iterator = iter(upstream_stream)
+        except BackendError:
+            raise
+        except Exception as error:
+            raise normalize_backend_error("stream", error) from None
+
+        try:
+            try:
+                current = next(iterator)
+            except StopIteration:
+                raise BackendExecutionError(
+                    "The upstream streaming model returned no audio chunks.",
+                    code="empty_stream",
+                    details={"operation": "stream"},
+                ) from None
+
+            sequence = 0
+            while True:
+                try:
+                    following = next(iterator)
+                except StopIteration:
+                    yield AudioChunk(
+                        samples=_waveform_to_samples(current, operation="stream"),
+                        sample_rate_hz=sample_rate_hz,
+                        channels=1,
+                        sequence=sequence,
+                        is_final=True,
+                        metadata=metadata,
+                    )
+                    return
+                except BackendError:
+                    raise
+                except Exception as error:
+                    raise normalize_backend_error("stream", error) from None
+
+                yield AudioChunk(
+                    samples=_waveform_to_samples(current, operation="stream"),
+                    sample_rate_hz=sample_rate_hz,
+                    channels=1,
+                    sequence=sequence,
+                    is_final=False,
+                    metadata=metadata,
+                )
+                current = following
+                sequence += 1
+        except BackendError:
+            raise
+        except GeneratorExit:
+            raise
+        except Exception as error:
+            raise normalize_backend_error("stream", error) from None
+        finally:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BackendError:
+                    raise
+                except Exception as error:
+                    raise normalize_backend_error("stream", error) from None
 
     def _result_metadata(
         self,
