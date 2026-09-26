@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
@@ -34,6 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--text", default=DEFAULT_TEXT)
+    parser.add_argument("--parallel-text", default=None)
     parser.add_argument("--startup-timeout", type=float, default=180.0)
     parser.add_argument("--request-timeout", type=float, default=600.0)
     return parser.parse_args()
@@ -158,13 +160,15 @@ def _request_tts(
     token: str,
     text: str,
     timeout: float,
+    request_id: str = "kaggle-production-demo",
+    output_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     response = httpx.post(
         f"http://127.0.0.1:{port}/v1/tts",
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Request-ID": "kaggle-production-demo",
+            "X-Request-ID": request_id,
         },
         json={"text": text},
         timeout=timeout,
@@ -191,6 +195,10 @@ def _request_tts(
                 "sha256": hashlib.sha256(response.content).hexdigest(),
             }
         )
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(response.content)
+        result["output_path"] = str(output_path)
     return result
 
 
@@ -235,6 +243,7 @@ def main() -> int:
             "VOXCPM_REQUIRE_AUTH": "1",
             "VOXCPM_API_TOKEN": token,
             "VOXCPM_MAX_QUEUE_SIZE": "1",
+            "VOXCPM_MAX_CONCURRENT_REQUESTS": str(max(1, resolved.workers)),
             "VOXCPM_STREAM_IPC_MAX_CHUNKS": "4",
             "HF_ENDPOINT": "http://127.0.0.1:9",
             "HTTP_PROXY": "http://127.0.0.1:9",
@@ -254,6 +263,7 @@ def main() -> int:
         "git_sha": _git_sha(),
         "profile": args.profile,
         "request_text": args.text,
+        "parallel_text": args.parallel_text,
         "model": {
             "model_id": model.model_id,
             "revision": model.revision,
@@ -296,17 +306,94 @@ def main() -> int:
             "gpu_processes": _gpu_process_rows(),
         }
 
-        result = _request_tts(
-            port=args.port,
-            token=token,
-            text=args.text,
-            timeout=args.request_timeout,
-        )
-        evidence["request"] = result
-        if result["status_code"] != 200:
-            raise RuntimeError(f"TTS request failed with HTTP {result['status_code']}")
-        if result.get("sample_rate") != 48_000 or result.get("channels") != 1:
-            raise RuntimeError("unexpected WAV format")
+        primary_audio_path = args.workspace / f"kaggle-{args.profile}-primary.wav"
+        secondary_audio_path = args.workspace / f"kaggle-{args.profile}-secondary.wav"
+
+        if args.parallel_text is None:
+            result = _request_tts(
+                port=args.port,
+                token=token,
+                text=args.text,
+                timeout=args.request_timeout,
+                output_path=primary_audio_path,
+            )
+            evidence["request"] = result
+            evidence["requests"] = [result]
+            evidence["parallel_showcase"] = {
+                "requested": False,
+                "concurrent": False,
+                "peak_busy_workers": 1 if result["status_code"] == 200 else 0,
+            }
+        else:
+            request_specs = (
+                ("kaggle-demo-en", args.text, primary_audio_path),
+                ("kaggle-demo-vi", args.parallel_text, secondary_audio_path),
+            )
+            peak_busy_workers = 0
+            if resolved.workers >= 2:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(
+                            _request_tts,
+                            port=args.port,
+                            token=token,
+                            text=text,
+                            timeout=args.request_timeout,
+                            request_id=request_id,
+                            output_path=output_path,
+                        )
+                        for request_id, text, output_path in request_specs
+                    ]
+                    while not all(future.done() for future in futures):
+                        try:
+                            snapshot = httpx.get(
+                                f"http://127.0.0.1:{args.port}/readyz",
+                                timeout=1.0,
+                            )
+                            if snapshot.status_code == 200:
+                                peak_busy_workers = max(
+                                    peak_busy_workers,
+                                    int(snapshot.json()["workers"]["busy"]),
+                                )
+                        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+                            pass
+                        time.sleep(0.05)
+                    results = [future.result() for future in futures]
+                concurrent = True
+            else:
+                results = [
+                    _request_tts(
+                        port=args.port,
+                        token=token,
+                        text=text,
+                        timeout=args.request_timeout,
+                        request_id=request_id,
+                        output_path=output_path,
+                    )
+                    for request_id, text, output_path in request_specs
+                ]
+                peak_busy_workers = 1 if all(
+                    result["status_code"] == 200 for result in results
+                ) else 0
+                concurrent = False
+
+            evidence["request"] = results[0]
+            evidence["requests"] = results
+            evidence["parallel_showcase"] = {
+                "requested": True,
+                "concurrent": concurrent,
+                "peak_busy_workers": peak_busy_workers,
+            }
+
+        for result in evidence["requests"]:
+            if result["status_code"] != 200:
+                raise RuntimeError(f"TTS request failed with HTTP {result['status_code']}")
+            if result.get("sample_rate") != 48_000 or result.get("channels") != 1:
+                raise RuntimeError("unexpected WAV format")
+
+        if args.parallel_text is not None and resolved.workers >= 2:
+            if evidence["parallel_showcase"]["peak_busy_workers"] < 2:
+                raise RuntimeError("parallel showcase did not observe two busy workers")
 
         evidence["post_request"] = {
             "gpu_processes": _gpu_process_rows(),
@@ -339,6 +426,8 @@ def main() -> int:
 
     print(json.dumps(evidence, indent=2, sort_keys=True))
     print(f"KAGGLE_PROFILE_{args.profile.upper().replace('-', '_')}=PASS")
+    if args.parallel_text is not None:
+        print("KAGGLE_T4X2_PARALLEL_SHOWCASE=PASS")
     print(f"KAGGLE_EVIDENCE={evidence_path}")
     return 0
 
