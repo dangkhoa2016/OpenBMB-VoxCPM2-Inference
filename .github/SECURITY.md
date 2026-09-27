@@ -1,17 +1,29 @@
 # Security Policy
 
+> Language / Ngôn ngữ: **English** | [Tiếng Việt](SECURITY.vi.md)
+
+## Reporting
+
+Do not open a public issue for a suspected vulnerability, exposed credential, unsafe artifact handling, dependency compromise, command-injection path, authentication bypass, or other security-sensitive finding.
+
+Use GitHub private vulnerability reporting when enabled. Otherwise email i.am@dangkhoa.dev with a concise description, affected component and revision, reproduction steps or proof of concept, expected impact, and suggested mitigation if known.
+
+Do not send real production credentials or unrelated private data.
+
+## Project-specific boundaries
+
+Important security boundaries include:
+
+- bearer authentication for protected API endpoints;
+- bounded request admission and active concurrency;
+- queue, request, inference, and stream-backpressure timeouts;
+- worker-process isolation and cleanup;
+- explicit local/offline model loading after bootstrap;
+- secret redaction and non-reflective validation errors;
+- fail-closed explicit CUDA profiles without silent CPU fallback.
+
+The current HTTP surface is text-first. Reference/prompt audio operations are local backend/CLI paths and are not claimed as hardened multipart upload endpoints.
+
 ## Supported versions
 
-This project is in pre-v1 development. Only the current `main` development branch receives security fixes. No stable release is currently supported.
-
-## Reporting a vulnerability
-
-Do not disclose exploitable vulnerability details, proof-of-concept code, credentials, or sensitive logs in a public issue.
-
-GitHub private vulnerability reporting was not enabled when this policy was created. Request a private contact channel by opening a public issue containing only the title `Private security contact request` and no technical details. Continue the report only after the maintainer provides a private channel.
-
-For non-sensitive bugs and documentation issues, use the public issue tracker.
-
-## Secrets and model credentials
-
-Never include GitHub tokens, Hugging Face tokens, Kaggle credentials, API keys, private model access data, or authentication headers in an issue, pull request, log, test, or commit.
+Security fixes target main and the latest supported stable release when practical. Historical commits are not guaranteed to receive backports.
