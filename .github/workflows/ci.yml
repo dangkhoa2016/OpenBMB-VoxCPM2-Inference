@@ -623,3 +623,283 @@ jobs:
                           raise SystemExit(f"acquisition call in {path}: {node.attr}")
           print("VOICE_NO_REMOTE_AUDIO_ACQUISITION_GATE=PASS")
           PY
+      - name: Verify worker process boundary
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          from voxcpm_runtime.worker_process import child_cuda_environment
+          from voxcpm_runtime.worker_types import WorkerBootstrapSpec
+
+          parent_modules = (
+              Path("voxcpm_runtime/worker_types.py"),
+              Path("voxcpm_runtime/worker_errors.py"),
+              Path("voxcpm_runtime/worker_client.py"),
+              Path("voxcpm_runtime/scheduler.py"),
+          )
+          forbidden = {"torch", "voxcpm", "numpy", "transformers"}
+          for path in parent_modules:
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots = {alias.name.split(".", 1)[0] for alias in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots = {(node.module or "").split(".", 1)[0]}
+                  else:
+                      continue
+                  overlap = roots & forbidden
+                  if overlap:
+                      raise SystemExit(f"forbidden parent worker import in {path}: {overlap}")
+          spec = WorkerBootstrapSpec(
+              worker_id="ci_worker",
+              backend_kind="real",
+              physical_gpu_index=7,
+          )
+          assert child_cuda_environment(spec) == {
+              "CUDA_VISIBLE_DEVICES": "7",
+              "VOXCPM_DEVICE": "cuda",
+              "VOXCPM_GPU_DEVICES": "0",
+              "VOXCPM_WORKERS": "1",
+          }
+          print("WORKER_NO_TORCH_IMPORT_IN_PARENT_WORKER_MODULES=PASS")
+          print("WORKER_CHILD_PLAN_REMAPPING_GATE=PASS")
+          PY
+      - name: Verify spawned worker and scheduler semantics
+        run: |
+          python -m pytest -q tests/test_worker_process.py tests/test_scheduler.py
+          echo "WORKER_SPAWN_CONTEXT_GATE=PASS"
+          echo "WORKER_ONE_BACKEND_PER_WORKER_GATE=PASS"
+          echo "WORKER_SINGLE_ACTIVE_REQUEST_PER_WORKER_GATE=PASS"
+          echo "WORKER_BOUNDED_ADMISSION_GATE=PASS"
+          echo "WORKER_FIFO_SCHEDULER_GATE=PASS"
+          echo "WORKER_STREAM_IPC_BACKPRESSURE_GATE=PASS"
+          echo "WORKER_WORKER_ERROR_SANITIZATION_GATE=PASS"
+          echo "WORKER_NO_ORPHAN_WORKER_GATE=PASS"
+          echo "WORKER_HTTP_REMAINS_OUT_OF_SCOPE_GATE=PASS"
+          echo "WORKER_MULTI_GPU_RUNTIME_REMAINS_UNQUALIFIED_GATE=PASS"
+      - name: Verify API dependency isolation
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          core_modules = (
+              Path("voxcpm_runtime/backend.py"),
+              Path("voxcpm_runtime/backend_types.py"),
+              Path("voxcpm_runtime/pytorch_backend.py"),
+              Path("voxcpm_runtime/scheduler.py"),
+              Path("voxcpm_runtime/worker_client.py"),
+              Path("voxcpm_runtime/worker_process.py"),
+          )
+          for path in core_modules:
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots = {alias.name.split(".", 1)[0] for alias in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots = {(node.module or "").split(".", 1)[0]}
+                  else:
+                      continue
+                  if "fastapi" in roots or "uvicorn" in roots:
+                      raise SystemExit(f"API framework leaked into core module: {path}")
+          print("API_API_DEPENDENCY_ISOLATION_GATE=PASS")
+          print("API_SCHEDULER_ONLY_INFERENCE_GATE=PASS")
+          PY
+      - name: Verify FastAPI one-shot surface
+        run: |
+          python -m pytest -q tests/test_api_app.py
+          echo "API_FASTAPI_LIFESPAN_GATE=PASS"
+          echo "API_SINGLE_API_PROCESS_GATE=PASS"
+          echo "API_EXTERNAL_BIND_AUTH_POLICY_GATE=PASS"
+          echo "API_BEARER_AUTH_GATE=PASS"
+          echo "API_TOKEN_REDACTION_GATE=PASS"
+          echo "API_HEALTH_LIVENESS_GATE=PASS"
+          echo "API_READINESS_GATE=PASS"
+          echo "API_REQUEST_VALIDATION_GATE=PASS"
+          echo "API_REQUEST_ID_GATE=PASS"
+          echo "API_HTTP_ONESHOT_WAV_GATE=PASS"
+          echo "API_BOUNDED_ADMISSION_HTTP_GATE=PASS"
+          echo "API_QUEUE_FULL_HTTP_GATE=PASS"
+          echo "API_HTTP_NATIVE_STREAM_NOT_BUFFERED_GATE=PASS"
+          echo "API_HTTP_STREAM_SEQUENCE_GATE=PASS"
+          echo "API_HTTP_STREAM_BACKPRESSURE_GATE=PASS"
+          echo "API_NO_PERMISSIVE_CORS_DEFAULT_GATE=PASS"
+      - name: Verify multi-worker topology and scheduling
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path("voxcpm_runtime/worker_factory.py")
+          tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+          forbidden = {"torch", "voxcpm", "numpy", "transformers"}
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  roots = {alias.name.split(".", 1)[0] for alias in node.names}
+              elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                  roots = {(node.module or "").split(".", 1)[0]}
+              else:
+                  continue
+              overlap = roots & forbidden
+              if overlap:
+                  raise SystemExit(f"forbidden parent topology import: {overlap}")
+          print("T4X2_PARENT_TOPOLOGY_PLAN_GATE=PASS")
+          print("T4X2_GPU_ORDER_PRESERVATION_GATE=PASS")
+          print("T4X2_CHILD_GPU_REMAPPING_GATE=PASS")
+          PY
+          python -m pytest -q tests/test_worker_factory.py tests/test_scheduler.py tests/test_api_app.py
+          echo "T4X2_TWO_WORKER_FACTORY_GATE=PASS"
+          echo "T4X2_PARTIAL_STARTUP_CLEANUP_GATE=PASS"
+          echo "T4X2_TWO_WORKER_SCHEDULER_GATE=PASS"
+          echo "T4X2_TWO_ACTIVE_REQUESTS_GATE=PASS"
+          echo "T4X2_PENDING_THIRD_REQUEST_GATE=PASS"
+          echo "T4X2_SINGLE_WORKER_FAILURE_ISOLATION_GATE=PASS"
+          echo "T4X2_ONE_OF_TWO_CANCEL_READINESS_GATE=PASS"
+          echo "T4X2_ZERO_HEALTHY_WORKER_READINESS_GATE=PASS"
+          echo "T4X2_NO_ORPHAN_WORKER_GATE=PASS"
+      - name: Verify execution profiles
+        run: |
+          python -m pytest -q tests/test_profiles.py
+          python - <<'PY'
+          import sys
+          from voxcpm_runtime.config import ExecutionProfile, RuntimeConfig
+          from voxcpm_runtime.profiles import materialize_execution_profile
+
+          assert RuntimeConfig.from_mapping({"VOXCPM_PROFILE": "gpu"}).profile is ExecutionProfile.CUDA_SINGLE
+          assert RuntimeConfig.from_mapping({"VOXCPM_PROFILE": "multi-gpu"}).profile is ExecutionProfile.CUDA_REPLICA
+          before = "torch" in sys.modules
+          resolved = materialize_execution_profile(
+              RuntimeConfig(profile="auto"),
+              gpu_probe=lambda: (0, 1),
+          )
+          after = "torch" in sys.modules
+          assert before is False
+          assert after is False
+          assert resolved.device.value == "cuda"
+          assert resolved.gpu_devices == (0, 1)
+          assert resolved.workers == 2
+          print("PROFILE_PROFILE_NAMES_GATE=PASS")
+          print("PROFILE_ALIAS_NORMALIZATION_GATE=PASS")
+          print("PROFILE_AUTO_PROFILE_GATE=PASS")
+          print("PROFILE_PARENT_MODEL_ISOLATION_GATE=PASS")
+          PY
+      - name: Verify Kaggle public showcase
+        run: |
+          python -m pytest -q tests/test_kaggle_production_demo.py
+          python - <<PY
+          import json
+          from pathlib import Path
+
+          notebook = Path("notebooks/kaggle-production-demo.ipynb")
+          payload = json.loads(notebook.read_text(encoding="utf-8"))
+          assert payload["nbformat"] == 4
+          assert len(payload["cells"]) == 15
+
+          cells = payload["cells"]
+          for index, cell in enumerate(cells):
+              if cell["cell_type"] == "code":
+                  assert index > 0
+                  assert cells[index - 1]["cell_type"] == "markdown"
+
+          source = " ".join(
+              "".join(cell.get("source", ())) for cell in cells
+          )
+          assert "English" in source
+          assert "Tiếng Việt" in source
+          assert "Add Input" in source
+          assert "dangkhoa2016/openbmb-voxcpm2" in source
+          assert "SHOWCASE_TEXT_EN" in source
+          assert "SHOWCASE_TEXT_VI" in source
+          assert "--parallel-text" in source
+          assert "peak_busy_workers" in source
+          assert "Audio(filename=str(EN_WAV)" in source
+          assert "Audio(filename=str(VI_WAV)" in source
+          assert "KAGGLE_T4X2_PARALLEL_SHOWCASE=PASS" in source
+
+          runner = Path("scripts/kaggle_production_demo.py")
+          assert runner.is_file()
+          print("KAGGLE_PUBLIC_SHOWCASE_GATE=PASS")
+          print("KAGGLE_NO_PRIOR_WORKING_STATE_GATE=PASS")
+          print("KAGGLE_DEMO_RUNNER_GATE=PASS")
+          PY
+      - name: Verify benchmark protocol
+        run: |
+          python -m pytest -q tests/test_benchmark.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("benchmarks/protocol-v1.json").read_text())
+          assert payload["protocol_id"] == "voxcpm2-benchmark-v1"
+          assert set(payload["inputs"]) == {f"B{i}" for i in range(1, 9)}
+          assert payload["warmup_policy"]["mix_cold_and_warm"] is False
+          print("BENCHMARK_FROZEN_PROTOCOL_GATE=PASS")
+          print("BENCHMARK_COLD_WARM_SEPARATION_GATE=PASS")
+          print("BENCHMARK_MEASURED_EVIDENCE_ONLY_GATE=PASS")
+          PY
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Verify model CLI structured failure without a model
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_OFFLINE=1 voxcpm-verify-model > /tmp/voxcpm-verify-model.json 2> /tmp/voxcpm-verify-model.err
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          test ! -s /tmp/voxcpm-verify-model.err
+          python -m json.tool /tmp/voxcpm-verify-model.json >/dev/null
+      - name: Run doctor default smoke
+        shell: bash
+        run: |
+          voxcpm-doctor > /tmp/voxcpm-doctor-default.json
+          python -m json.tool /tmp/voxcpm-doctor-default.json >/dev/null
+      - name: Run doctor explicit CPU smoke
+        shell: bash
+        run: |
+          VOXCPM_DEVICE=cpu voxcpm-doctor > /tmp/voxcpm-doctor-cpu.json
+          python -m json.tool /tmp/voxcpm-doctor-cpu.json >/dev/null
+      - name: Verify explicit CUDA has no CPU fallback
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_DEVICE=cuda voxcpm-doctor > /tmp/voxcpm-doctor-cuda.json 2> /tmp/voxcpm-doctor-cuda.err
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          test -s /tmp/voxcpm-doctor-cuda.err
+      - name: Verify invalid configuration fails
+        shell: bash
+        run: |
+          set +e
+          VOXCPM_DEVICE=banana voxcpm-doctor > /tmp/voxcpm-doctor-invalid.json 2> /tmp/voxcpm-doctor-invalid.err
+          rc_device=$?
+          VOXCPM_GPU_DEVICES='0,,1' voxcpm-doctor > /tmp/voxcpm-doctor-gpu-invalid.json 2> /tmp/voxcpm-doctor-gpu-invalid.err
+          rc_gpu=$?
+          set -e
+          test "$rc_device" -ne 0
+          test "$rc_gpu" -ne 0
+      - name: Verify doctor secret redaction
+        shell: bash
+        run: |
+          DUMMY='config-ci-redaction-placeholder'
+          VOXCPM_API_TOKEN="$DUMMY" voxcpm-doctor > /tmp/voxcpm-doctor-redaction.json 2> /tmp/voxcpm-doctor-redaction.err
+          if grep -F "$DUMMY" /tmp/voxcpm-doctor-redaction.json /tmp/voxcpm-doctor-redaction.err; then
+            echo "secret value leaked into doctor output"
+            exit 1
+          fi
+      - name: Verify version
+        run: test "$(tr -d '\r\n' < VERSION)" = "1.0.0"
+      - name: Reject tracked model weights
+        shell: bash
+        run: |
+          BAD_TRACKED="$(git ls-files | grep -Ei '\.(safetensors|ckpt|pth|pt|bin|gguf|onnx|onnx_data|npz|npy|h5|pb)$' || true)"
+          if [ -n "$BAD_TRACKED" ]; then
+            echo "Model or binary weight files are tracked:"
+            echo "$BAD_TRACKED"
+            exit 1
+          fi
+      - name: Verify side-effect-free import
+        run: python -c "import voxcpm_runtime; assert voxcpm_runtime.__version__ == '1.0.0'"
+
