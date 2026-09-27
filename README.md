@@ -142,4 +142,4 @@ Public qualification evidence is summarized in `provenance/QUALIFICATION.md`.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+MIT for this repository's original code and documentation. See [LICENSE](LICENSE).

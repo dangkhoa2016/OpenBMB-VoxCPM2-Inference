@@ -142,4 +142,4 @@ Evidence qualification public được tóm tắt tại `provenance/QUALIFICATIO
 
 ## License
 
-Apache-2.0. Xem [LICENSE](LICENSE).
+MIT cho code và tài liệu nguyên bản của repository này. Xem [LICENSE](LICENSE).
