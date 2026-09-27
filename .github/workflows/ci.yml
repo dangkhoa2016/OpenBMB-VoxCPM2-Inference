@@ -903,3 +903,101 @@ jobs:
       - name: Verify side-effect-free import
         run: python -c "import voxcpm_runtime; assert voxcpm_runtime.__version__ == '1.0.0'"
 
+  docker-portability:
+    name: Docker portability
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build contract-smoke image
+        run: docker build --target contract-smoke -t voxcpm2-docker-contract-smoke .
+
+      - name: Run container API contract smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .docker-model
+          docker run -d             --name voxcpm2-docker-smoke             -p 18090:8090             -v "$PWD/.docker-model:/models/VoxCPM2:ro"             -e VOXCPM_API_TOKEN=docker-ci-placeholder-token             voxcpm2-docker-contract-smoke
+
+          cleanup() {
+            docker logs voxcpm2-docker-smoke > /tmp/docker-container.log 2>&1 || true
+            docker rm -f voxcpm2-docker-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 60); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' voxcpm2-docker-smoke)"
+            if [ "$status" = healthy ]; then
+              break
+            fi
+            if [ "$status" = unhealthy ]; then
+              docker logs voxcpm2-docker-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' voxcpm2-docker-smoke)" = healthy
+
+          test "$(curl -sS -o /tmp/docker-health.json -w '%{http_code}' http://127.0.0.1:18090/healthz)" = 200
+          test "$(curl -sS -o /tmp/docker-ready.json -w '%{http_code}' http://127.0.0.1:18090/readyz)" = 200
+          test "$(curl -sS -o /tmp/docker-noauth.json -w '%{http_code}'             -H 'Content-Type: application/json'             -d '{"text":"hello"}'             http://127.0.0.1:18090/v1/tts)" = 401
+
+          status="$(curl -sS -D /tmp/docker-wav.headers -o /tmp/docker.wav -w '%{http_code}'             -H 'Authorization: Bearer docker-ci-placeholder-token'             -H 'Content-Type: application/json'             -H 'X-Request-ID: docker-one-shot'             -d '{"text":"Xin chào từ VoxCPM2."}'             http://127.0.0.1:18090/v1/tts)"
+          test "$status" = 200
+
+          status="$(curl -sS -D /tmp/docker-stream.headers -o /tmp/docker.pcm -w '%{http_code}'             -H 'Authorization: Bearer docker-ci-placeholder-token'             -H 'Content-Type: application/json'             -H 'X-Request-ID: docker-stream'             -d '{"text":"stream hello"}'             http://127.0.0.1:18090/v1/tts/stream)"
+          test "$status" = 200
+
+          python - <<'PY'
+          import json
+          import wave
+          from pathlib import Path
+
+          assert json.loads(Path("/tmp/docker-health.json").read_text()) == {"status": "ok"}
+          ready = json.loads(Path("/tmp/docker-ready.json").read_text())
+          assert ready["status"] == "ready"
+          with wave.open("/tmp/docker.wav", "rb") as wav:
+              assert wav.getnchannels() == 1
+              assert wav.getsampwidth() == 2
+              assert wav.getframerate() == 48_000
+              assert wav.getnframes() > 0
+          assert Path("/tmp/docker.pcm").stat().st_size > 0
+          wav_headers = Path("/tmp/docker-wav.headers").read_text().lower()
+          stream_headers = Path("/tmp/docker-stream.headers").read_text().lower()
+          assert "content-type: audio/wav" in wav_headers
+          assert "x-request-id: docker-one-shot" in wav_headers
+          assert "content-type: application/octet-stream" in stream_headers
+          assert "x-audio-format: pcm_s16le" in stream_headers
+          assert "x-audio-sample-rate: 48000" in stream_headers
+          assert "x-audio-channels: 1" in stream_headers
+          print("DOCKER_CONTAINER_API_CONTRACT=PASS")
+          PY
+
+          test "$(docker exec voxcpm2-docker-smoke id -u)" = 10001
+          test "$(docker exec voxcpm2-docker-smoke sh -c 'test -d "$VOXCPM_MODEL_PATH" && echo mounted')" = mounted
+          echo "DOCKER_NON_ROOT_GATE=PASS"
+          echo "DOCKER_MODEL_MOUNT_GATE=PASS"
+          echo "DOCKER_HEALTHCHECK_GATE=PASS"
+
+      - name: Build CPU runtime image
+        run: docker build --target runtime -t voxcpm2-docker-cpu .
+
+      - name: Verify CPU runtime image identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect voxcpm2-docker-cpu --format '{{.Config.User}}')" = voxcpm
+          test "$(docker image inspect voxcpm2-docker-cpu --format '{{json .Config.Cmd}}')" = '["voxcpm-serve"]'
+          docker run --rm --entrypoint sh voxcpm2-docker-cpu -c '
+            set -eu
+            test "$VOXCPM_MODEL_PATH" = /models/VoxCPM2
+            test "$VOXCPM_PROFILE" = cpu
+            test "$VOXCPM_DEVICE" = cpu
+            test "$VOXCPM_OFFLINE" = 1
+            test "$(git -C /opt/VoxCPM rev-parse HEAD)" = f772e498a45fbb5fb8e13fbf9b9c48be9fe33e69
+            python -c "import torch, voxcpm; assert not torch.cuda.is_available(); print(torch.__version__); print(voxcpm.__file__)"
+          '
+          echo "DOCKER_CPU_RUNTIME_IMAGE=PASS"
+          echo "DOCKER_NON_KAGGLE_DOCKER=PASS"
