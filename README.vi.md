@@ -1,5 +1,19 @@
 # OpenBMB-VoxCPM2-Inference
 
+<p align="center">
+  <a href="https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-green.svg"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10--3.12-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-VoxCPM2-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="GPU" src="https://img.shields.io/badge/GPU-Tesla%20T4%20%C3%972-76B900?logo=nvidia&logoColor=white">
+  <img alt="API" src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white">
+  <img alt="Kaggle" src="https://img.shields.io/badge/Kaggle-T4%20%C3%972-20BEFF?logo=kaggle&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-CPU%20portable-2496ED?logo=docker&logoColor=white">
+  <a href="https://github.com/dangkhoa2016/OpenBMB-VoxCPM2-Inference/releases/tag/v1.0.0"><img alt="Release" src="https://img.shields.io/badge/Release-v1.0.0-0A7E07"></a>
+</p>
+
+> 🌐 Ngôn ngữ: [English](README.md) | **Tiếng Việt**
+
 Kỹ thuật inference portable trên CPU/GPU cho OpenBMB VoxCPM2.
 
 Đây là một **dự án kỹ thuật độc lập** xây dựng quanh OpenBMB VoxCPM2. Đây không phải bản phát hành chính thức của OpenBMB và không tuyên bố có liên kết với OpenBMB.
