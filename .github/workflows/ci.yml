@@ -1,0 +1,625 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Bootstrap on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[api]'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run bootstrap tests
+        run: python -m pytest -q
+      - name: Compile runtime modules
+        run: python -m compileall -q voxcpm_runtime deploy tests scripts
+      - name: Verify backend import and determinism
+        run: |
+          python - <<'PY'
+          from voxcpm_runtime.backend import InferenceBackend
+          from voxcpm_runtime.backend_types import SpeechRequest, StreamRequest
+          from voxcpm_runtime.fake_backend import FakeVoxCPMBackend
+
+          request = SpeechRequest("CI deterministic fake")
+          first_backend = FakeVoxCPMBackend()
+          second_backend = FakeVoxCPMBackend()
+          assert isinstance(first_backend, InferenceBackend)
+          first_info = first_backend.load()
+          second_info = second_backend.load()
+          assert first_info == second_info
+          first = first_backend.synthesize(request)
+          second = second_backend.synthesize(request)
+          chunks = list(first_backend.stream(StreamRequest(request)))
+          assert first.samples == second.samples
+          assert first.samples == tuple(
+              sample for chunk in chunks for sample in chunk.samples
+          )
+          assert chunks[-1].is_final is True
+          assert first_backend.close() is None
+          assert second_backend.close() is None
+          print("BACKEND_FAKE_BACKEND_SMOKE=PASS")
+          PY
+      - name: Reject forbidden backend runtime imports
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          runtime_dir = Path("voxcpm_runtime")
+          backend_paths = (
+              runtime_dir / "backend.py",
+              runtime_dir / "backend_types.py",
+              runtime_dir / "errors.py",
+              runtime_dir / "fake_backend.py",
+          )
+          allowed_internal = {
+              "voxcpm_runtime.backend_types",
+              "voxcpm_runtime.errors",
+          }
+          forbidden = {
+              "aiohttp",
+              "huggingface_hub",
+              "httpx",
+              "numpy",
+              "requests",
+              "torch",
+              "transformers",
+              "voxcpm",
+          }
+          forbidden_backend_imports = {"random", "secrets", "time"}
+          for path in sorted(runtime_dir.glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots = {alias.name.split(".", 1)[0] for alias in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots = {(node.module or "").split(".", 1)[0]}
+                  else:
+                      continue
+                  overlap = roots & forbidden
+                  if overlap:
+                      raise SystemExit(f"forbidden runtime imports in {path}: {overlap}")
+          for path in backend_paths:
+              source = path.read_text(encoding="utf-8")
+              tree = ast.parse(source, filename=str(path))
+              for marker in (
+                  "/kaggle/input",
+                  "VOXCPM_MODEL_PATH",
+                  "voxcpm-source-lock",
+              ):
+                  if marker in source:
+                      raise SystemExit(f"forbidden deployment coupling in {path}: {marker}")
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      modules = {alias.name for alias in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      modules = {node.module or ""}
+                  else:
+                      modules = set()
+                  overlap = {module.split(".", 1)[0] for module in modules} & forbidden_backend_imports
+                  if overlap:
+                      raise SystemExit(f"nondeterministic backend-contract qualification imports in {path}: {overlap}")
+                  for module in modules:
+                      if module.startswith("voxcpm_runtime") and module not in allowed_internal:
+                          raise SystemExit(f"unexpected internal backend-contract qualification import in {path}: {module}")
+                      if module.startswith("deploy"):
+                          raise SystemExit(f"deployment coupling in {path}: {module}")
+                  if isinstance(node, ast.Call):
+                      if isinstance(node.func, ast.Name) and node.func.id == "hash":
+                          raise SystemExit(f"randomized hash used in {path}")
+                      if isinstance(node.func, ast.Attribute) and node.func.attr == "hash":
+                          raise SystemExit(f"randomized hash used in {path}")
+          print("BACKEND_FORBIDDEN_IMPORT_SCAN=PASS")
+          PY
+      - name: Verify real backend keeps upstream imports lazy
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          runtime_dir = Path("voxcpm_runtime")
+          real_backend = runtime_dir / "pytorch_backend.py"
+          forbidden = {
+              "aiohttp",
+              "huggingface_hub",
+              "httpx",
+              "numpy",
+              "requests",
+              "torch",
+              "transformers",
+              "voxcpm",
+          }
+
+          def imported_roots(tree):
+              roots = set()
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      roots.add((node.module or "").split(".", 1)[0])
+              return roots
+
+          def top_level_statements(tree):
+              return {
+                  id(node)
+                  for node in tree.body
+                  if isinstance(
+                      node,
+                      (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.Expr),
+                  )
+              }
+
+          # No runtime module may import the upstream stack at module scope.
+          for path in sorted(runtime_dir.glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              scoped = top_level_statements(tree)
+              for node in ast.walk(tree):
+                  if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                      continue
+                  roots = (
+                      {alias.name.split(".", 1)[0] for alias in node.names}
+                      if isinstance(node, ast.Import)
+                      else {(node.module or "").split(".", 1)[0]}
+                  )
+                  overlap = roots & forbidden
+                  if not overlap:
+                      continue
+                  owner = getattr(node, "parent", None)
+                  del owner
+                  if id(node) in scoped:
+                      raise SystemExit(
+                          f"module-level upstream import in {path}: {sorted(overlap)}"
+                      )
+              # A function-local upstream import is only acceptable in the
+              # real backend, and only for the pinned upstream package itself.
+              if path != real_backend:
+                  offenders = imported_roots(tree) & (forbidden - {"voxcpm"})
+                  if offenders:
+                      raise SystemExit(
+                          f"unexpected runtime import in {path}: {sorted(offenders)}"
+                      )
+
+          # The real backend must reach the pinned upstream package only
+          # through importlib inside its load path, never a static import.
+          tree = ast.parse(real_backend.read_text(encoding="utf-8"), filename=str(real_backend))
+          if imported_roots(tree) & {"voxcpm", "torch", "numpy", "transformers"}:
+              raise SystemExit("the real backend must not statically import upstream")
+          lazy_calls = 0
+          for node in ast.walk(tree):
+              if (
+                  isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "import_module"
+                  and node.args
+                  and isinstance(node.args[0], ast.Constant)
+                  and node.args[0].value == "voxcpm"
+              ):
+                  lazy_calls += 1
+          if lazy_calls != 1:
+              raise SystemExit(
+                  f"the real backend must import upstream exactly once via "
+                  f"importlib, found {lazy_calls}"
+              )
+          print("CPU_RUNTIME_LAZY_UPSTREAM_IMPORT_SCAN=PASS")
+          PY
+      - name: Verify single-GPU device mapping
+        run: |
+          python - <<'PY'
+          from voxcpm_runtime.config import OptimizationMode
+          from voxcpm_runtime.device import ExecutionPlan
+          from voxcpm_runtime.errors import BackendUnsupportedError
+          from voxcpm_runtime.pytorch_backend import (
+              resolve_upstream_device,
+              resolve_upstream_optimize,
+          )
+
+          one = ExecutionPlan(
+              effective_device="cuda",
+              selected_gpu_indices=(0,),
+              worker_count=1,
+              worker_gpu_indices=(0,),
+          )
+          assert resolve_upstream_device(one) == "cuda:0"
+          assert resolve_upstream_optimize(one, OptimizationMode.AUTO) is False
+
+          multi = ExecutionPlan(
+              effective_device="cuda",
+              selected_gpu_indices=(0, 1),
+              worker_count=2,
+              worker_gpu_indices=(0, 1),
+          )
+          try:
+              resolve_upstream_device(multi)
+          except BackendUnsupportedError as error:
+              assert error.code == "multi_gpu_not_qualified"
+          else:
+              raise AssertionError("multi-GPU plan was not refused")
+          print("SINGLE_GPU_SINGLE_GPU_DEVICE_MAPPING_GATE=PASS")
+          print("SINGLE_GPU_MULTI_GPU_REFUSAL_GATE=PASS")
+          PY
+      - name: Verify GPU telemetry contract
+        run: |
+          python - <<'PY'
+          from types import SimpleNamespace
+
+          from voxcpm_runtime.runtime_metrics import observe_gpu_memory
+
+          class FakeCuda:
+              def is_available(self):
+                  return True
+              def get_device_properties(self, index):
+                  assert index == 0
+                  return SimpleNamespace(
+                      name="stub-gpu",
+                      total_memory=16_000_000_000,
+                      major=7,
+                      minor=5,
+                  )
+              def memory_allocated(self, index):
+                  return 100
+              def memory_reserved(self, index):
+                  return 200
+              def max_memory_allocated(self, index):
+                  return 300
+              def max_memory_reserved(self, index):
+                  return 400
+
+          payload = observe_gpu_memory(SimpleNamespace(cuda=FakeCuda()), 0).to_dict()
+          assert payload["cuda_available"] is True
+          assert payload["device_index"] == 0
+          assert payload["max_memory_allocated_bytes"] == 300
+          assert payload["max_memory_reserved_bytes"] == 400
+          print("SINGLE_GPU_GPU_TELEMETRY_GATE=PASS")
+          PY
+      - name: Verify the generate CLI is importable without the upstream stack
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+
+          completed = subprocess.run(
+              [sys.executable, "-m", "scripts.generate", "--help"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          assert completed.returncode == 0, completed.stderr
+          for flag in ("--text", "--output", "--report", "--load-only"):
+              assert flag in completed.stdout, flag
+          print("CPU_RUNTIME_GENERATE_CLI_SMOKE=PASS")
+          PY
+      - name: Verify one-shot voice feature mapping without model weights
+        run: |
+          python - <<'PY'
+          import ast
+          import json
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+          from types import ModuleType, SimpleNamespace
+
+          from voxcpm_runtime.backend_types import (
+              AudioReference,
+              CloneRequest,
+              ContinuationRequest,
+              SpeechRequest,
+              StreamRequest,
+              VoiceDesignRequest,
+          )
+          from voxcpm_runtime.config import RuntimeConfig
+          from voxcpm_runtime.device import ExecutionPlan
+          from voxcpm_runtime.errors import (
+              BackendRequestError,
+              BackendUnsupportedError,
+          )
+          from voxcpm_runtime.model_resolver import ModelResolver
+          from voxcpm_runtime.pytorch_backend import (
+              REAL_BACKEND_CAPABILITIES,
+              PytorchVoxCPMBackend,
+              build_design_text,
+              validate_local_reference_audio,
+          )
+
+          calls = []
+
+          class StubModel:
+              tts_model = SimpleNamespace(sample_rate=48000)
+
+              def generate(self, **kwargs):
+                  calls.append(dict(kwargs))
+                  return [0.0, 0.5, -0.5]
+
+          class StubUpstream:
+              @staticmethod
+              def from_pretrained(path, **kwargs):
+                  return StubModel()
+
+          module = ModuleType("voxcpm")
+          module.VoxCPM = StubUpstream
+          sys.modules["voxcpm"] = module
+
+          workspace = Path(tempfile.mkdtemp(prefix="voice-mapping-"))
+          config_path = workspace / "config.json"
+          config_path.write_text(
+              json.dumps(
+                  {
+                      "architecture": "voxcpm2",
+                      "lm_config": {
+                          "hidden_size": 8,
+                          "intermediate_size": 16,
+                          "num_attention_heads": 2,
+                          "num_key_value_heads": 1,
+                          "num_hidden_layers": 1,
+                          "vocab_size": 16,
+                      },
+                      "encoder_config": {
+                          "hidden_dim": 8,
+                          "ffn_dim": 16,
+                          "num_heads": 2,
+                          "num_layers": 1,
+                      },
+                      "dit_config": {
+                          "hidden_dim": 8,
+                          "ffn_dim": 16,
+                          "num_heads": 2,
+                          "num_layers": 1,
+                          "cfm_config": {},
+                      },
+                      "audio_vae_config": {
+                          "encoder_dim": 8,
+                          "encoder_rates": [2],
+                          "decoder_dim": 8,
+                          "decoder_rates": [2],
+                          "sample_rate": 16000,
+                          "out_sample_rate": 48000,
+                      },
+                  }
+              ),
+              encoding="utf-8",
+          )
+          (workspace / "model.safetensors").write_bytes(b"stub")
+          (workspace / "audiovae.safetensors").write_bytes(b"stub")
+          (workspace / "tokenizer.json").write_text(
+              json.dumps(
+                  {
+                      "version": "1.0",
+                      "model": {"type": "BPE", "vocab": {"<unk>": 0, "<s>": 1, "</s>": 2}},
+                  }
+              ),
+              encoding="utf-8",
+          )
+          (workspace / "tokenizer_config.json").write_text(
+              json.dumps({"tokenizer_class": "VoxCPM2Tokenizer"}),
+              encoding="utf-8",
+          )
+          resolved = ModelResolver().resolve(
+              RuntimeConfig(model_path=str(workspace), offline=True)
+          )
+          backend = PytorchVoxCPMBackend(
+              resolved_model=resolved,
+              execution_plan=ExecutionPlan(
+                  effective_device="cpu", selected_gpu_indices=(), worker_count=1
+              ),
+          )
+          backend.load()
+
+          reference = workspace / "reference.wav"
+          reference.write_bytes(b"RIFF0000WAVEfmt ")
+
+          # Voice design: instruction is folded into the text exactly once.
+          backend.design(
+              VoiceDesignRequest(
+                  text="Xin chào từ VoxCPM2.",
+                  instruction="giọng nữ ấm áp, bình tĩnh",
+              )
+          )
+          assert calls[-1] == {
+              "text": "(giọng nữ ấm áp, bình tĩnh)Xin chào từ VoxCPM2."
+          }
+          assert build_design_text("target", "calm") == "(calm)target"
+          assert build_design_text("target", "") == "target"
+          design_result = backend.design(
+              VoiceDesignRequest(text="a", instruction="b")
+          )
+          assert design_result.sample_rate_hz == 48000
+          assert dict(design_result.metadata)["operation"] == "design"
+          assert dict(design_result.metadata)["conditioning"] == "instruction"
+          print("VOICE_VOICE_DESIGN_MAPPING_GATE=PASS")
+
+          # Clone: local reference only, never a prompt pair.
+          backend.clone(
+              CloneRequest(
+                  text="Xin chào, đây là phép thử clone giọng.",
+                  reference_audio=AudioReference(local_path=str(reference)),
+              )
+          )
+          assert set(calls[-1]) == {"text", "reference_wav_path"}
+          assert calls[-1]["reference_wav_path"] == str(reference)
+          assert validate_local_reference_audio(
+              AudioReference(local_path=str(reference))
+          ) == str(reference)
+          for missing, code in (
+              (workspace / "absent.wav", "reference_audio_not_found"),
+              (workspace, "reference_audio_not_file"),
+          ):
+              try:
+                  validate_local_reference_audio(AudioReference(local_path=str(missing)))
+              except BackendRequestError as error:
+                  assert error.code == code, (error.code, code)
+              else:
+                  raise AssertionError(f"reference {missing.name} was not refused")
+          print("VOICE_VOICE_CLONE_MAPPING_GATE=PASS")
+
+          # Continuation: prompt pair, never a reference path.
+          backend.continue_audio(
+              ContinuationRequest(
+                  text="Và đây là phần tiếp theo.",
+                  reference_audio=AudioReference(local_path=str(reference)),
+                  reference_transcript="Xin chào, đây là giọng nói tham chiếu.",
+              )
+          )
+          assert set(calls[-1]) == {"text", "prompt_text", "prompt_wav_path"}
+          assert "reference_wav_path" not in calls[-1]
+          print("VOICE_AUDIO_CONTINUATION_MAPPING_GATE=PASS")
+
+          # No absolute path may reach a normalized public error envelope.
+          secret_path = workspace / "private-voice-sample.wav"
+          secret_path.write_bytes(b"RIFF0000WAVEfmt ")
+          for operation, request in (
+              (
+                  "clone",
+                  CloneRequest(
+                      text="a",
+                      reference_audio=AudioReference(local_path=str(secret_path)),
+                  ),
+              ),
+              (
+                  "continue_audio",
+                  ContinuationRequest(
+                      text="a",
+                      reference_audio=AudioReference(local_path=str(secret_path)),
+                      reference_transcript="voice-private-transcript",
+                  ),
+              ),
+          ):
+              class Exploding:
+                  def generate(self, **kwargs):
+                      raise ValueError(
+                          f"decode failed for {secret_path} "
+                          f"voice-private-transcript"
+                      )
+
+                  tts_model = SimpleNamespace(sample_rate=48000)
+
+              backend._model = Exploding()
+              try:
+                  getattr(backend, operation)(request)
+              except Exception as error:
+                  envelope = json.dumps(error.to_dict(), default=str)
+                  assert str(workspace) not in envelope, envelope
+                  assert "private-voice-sample.wav" not in envelope, envelope
+                  assert "voice-private-transcript" not in envelope, envelope
+              else:
+                  raise AssertionError(f"{operation} failure was not normalized")
+          print("VOICE_REFERENCE_PATH_REDACTION_GATE=PASS")
+
+          # streaming qualification advertises native stream alongside the qualified one-shot features.
+          assert REAL_BACKEND_CAPABILITIES == (
+              "clone",
+              "continue_audio",
+              "design",
+              "stream",
+              "synthesize",
+          )
+          info = backend.load()
+          assert info.capabilities == REAL_BACKEND_CAPABILITIES
+          print("STREAMING_REAL_BACKEND_STREAM_CAPABILITY_GATE=PASS")
+
+          class NativeStreamModel:
+              def __init__(self):
+                  self.stream_calls = []
+                  self.tts_model = SimpleNamespace(sample_rate=48000)
+
+              def generate(self, **kwargs):
+                  raise AssertionError("stream path buffered through generate")
+
+              def generate_streaming(self, **kwargs):
+                  self.stream_calls.append(dict(kwargs))
+                  return iter(((0.0, 0.1), (0.2, 0.3), (0.4,)))
+
+          native = NativeStreamModel()
+          backend._model = native
+          iterator = backend.stream(StreamRequest(SpeechRequest(text="a")))
+          assert native.stream_calls == []
+          first = next(iterator)
+          assert native.stream_calls == [{"text": "a"}]
+          remaining = list(iterator)
+          chunks = [first, *remaining]
+          assert [chunk.sequence for chunk in chunks] == [0, 1, 2]
+          assert [chunk.is_final for chunk in chunks] == [False, False, True]
+          assert all(chunk.samples for chunk in chunks)
+          assert tuple(
+              sample for chunk in chunks for sample in chunk.samples
+          ) == (0.0, 0.1, 0.2, 0.3, 0.4)
+          print("STREAMING_NATIVE_STREAM_MAPPING_GATE=PASS")
+          print("STREAMING_NATIVE_NOT_BUFFERED_GATE=PASS")
+          print("STREAMING_STREAM_SEQUENCE_GATE=PASS")
+          print("STREAMING_FINAL_CHUNK_SEMANTICS_GATE=PASS")
+          print("STREAMING_LAZY_STREAM_ITERATION_GATE=PASS")
+
+          # The CLI must reject every invalid flag combination offline.
+          for arguments in (
+              ["--text", "a", "--voice-instruction", "b", "--reference-audio", str(reference)],
+              ["--text", "a", "--reference-audio", str(reference), "--prompt-text", "b"],
+              ["--text", "a", "--prompt-audio", str(reference)],
+          ):
+              completed = subprocess.run(
+                  [sys.executable, "-m", "scripts.generate", *arguments, "--output", "/tmp/voice-unused.wav"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              assert completed.returncode == 2, completed.stdout
+              payload = json.loads(completed.stdout)
+              assert payload["error"]["code"] == "invalid_request"
+              assert str(workspace) not in completed.stdout
+          help_completed = subprocess.run(
+              [sys.executable, "-m", "scripts.generate", "--help"],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+          assert help_completed.returncode == 0
+          assert "--stream" in help_completed.stdout
+          for forbidden in (
+              "--chunk",
+              "--queue",
+              "--denoise",
+              "--http",
+              "--websocket",
+              "--sse",
+          ):
+              assert forbidden not in help_completed.stdout
+          print("STREAMING_HTTP_REMAINS_OUT_OF_SCOPE_GATE=PASS")
+
+          # No runtime module may acquire audio or reach the network.
+          for path in sorted(Path("voxcpm_runtime").glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                      if node.func.id in {"urlopen", "urlretrieve"}:
+                          raise SystemExit(f"network acquisition in {path}")
+                  if isinstance(node, ast.Attribute):
+                      if node.attr in {"urlopen", "urlretrieve", "download", "from_pretrained"}:
+                          if path.name == "pytorch_backend.py" and node.attr == "from_pretrained":
+                              continue
+                          raise SystemExit(f"acquisition call in {path}: {node.attr}")
+          print("VOICE_NO_REMOTE_AUDIO_ACQUISITION_GATE=PASS")
+          PY
