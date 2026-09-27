@@ -47,4 +47,4 @@ The code authority, model identity, and this engineering repository are separate
 
 ## License handling for this repository
 
-The independent bootstrap validation project is licensed under Apache-2.0. bootstrap validation contains no copied upstream implementation code. Any later reuse or redistribution of upstream source must preserve applicable copyright, license, attribution, and NOTICE obligations at the exact selected revision.
+This repository's original code and documentation are licensed under the MIT License, Copyright (c) 2026 Đăng Khoa <i.am@dangkhoa.dev>. The pinned upstream VoxCPM source and the reference VoxCPM2 model remain separate third-party works under their own verified license terms (Apache-2.0 at the revisions recorded above). This repository does not relicense upstream code, model weights, or other third-party material. Any reuse or redistribution of upstream material must preserve its applicable copyright, license, attribution, and NOTICE obligations.
