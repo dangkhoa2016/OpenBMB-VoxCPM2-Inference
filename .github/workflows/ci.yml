@@ -26,7 +26,7 @@ jobs:
           - "3.12"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -909,7 +909,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Build contract-smoke image
         run: docker build --target contract-smoke -t voxcpm2-docker-contract-smoke .
